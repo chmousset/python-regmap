@@ -16,6 +16,8 @@ class SdaScl:
         next_sda = self.sda if sda == 'x' else int(sda)
         next_scl = int(scl)
         self.transitions += [(next_sda << 1) | next_scl]
+        self.sda = next_sda
+        self.scl = next_scl
 
     def idle(self):
         for _ in range(4):
@@ -56,10 +58,12 @@ class SdaScl:
             self.bit(1 & (value >> shift))
 
     def bit_one(self):
+        self.add_transition("x0")
         self.add_transition("10")
         self.add_transition("11")
 
     def bit_zero(self):
+        self.add_transition("x0")
         self.add_transition("00")
         self.add_transition("01")
 
@@ -71,12 +75,9 @@ class I2cSequencer(Module):
 
         # tristate the IOs
         sda, scl = Signal(), Signal()
-        self.specials += Tristate(pads.sda, 0, ~sda)
-        self.specials += Tristate(pads.scl, 0, ~scl)
-        # self.comb += [
-        #     pads.sda.eq(sda),
-        #     pads.scl.eq(scl),
-        # ]
+        self.sda_i, self.scl_i = Signal(), Signal()
+        self.specials.sda_tri = Tristate(pads.sda, 0, ~sda, self.sda_i)
+        self.specials.scl_tri = Tristate(pads.scl, 0, ~scl, self.scl_i)
 
         # Transform transactions to SDA/SCL bit values
         sdascl = SdaScl()

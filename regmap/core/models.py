@@ -17,7 +17,7 @@ class I2cTransaction:
 
 
 class I2cDevice:
-    def __init__(self, bus:I2cBus, address):
+    def __init__(self, bus: I2cBus, address):
         self.address = address
 
 
