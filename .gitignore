@@ -1,0 +1,12 @@
+*.vcd
+/env/
+__pycache__/
+build/
+*.egg-info/
+_autosummary/
+_build/
+.pytest_cache/
+/*.png
+vivado*
+*.log
+*.jou
