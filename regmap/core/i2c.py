@@ -1,6 +1,7 @@
 from math import ceil
 from migen import Module, If, Signal
 from migen.genlib.misc import WaitTimer
+from migen.genlib.io import DDROutput
 from migen.fhdl.specials import Memory, Tristate
 
 
@@ -26,23 +27,17 @@ class SdaScl:
     def start(self):
         self.idle()
         self.add_transition("01")
-        self.add_transition("00")
-        self.add_transition("00")
-        self.add_transition("00")
 
     def restart(self):
-        self.add_transition("x0")
-        self.add_transition("01")
+        self.add_transition("10")
         self.add_transition("11")
         self.add_transition("01")
-        self.add_transition("00")
-        self.add_transition("00")
-        self.add_transition("00")
 
     def stop(self):
-        self.add_transition("x0")
+        # self.add_transition("x0")
         self.add_transition("00")
         self.add_transition("01")
+        self.add_transition("11")
         self.idle()
 
     def bit(self, value):
@@ -52,18 +47,16 @@ class SdaScl:
             self.bit_zero()
 
     def byte(self, value):
-        print(f"W 0b{value:08b}")
         for shift in range(7, -1, -1):
-            print(f"  [{shift}] = 1 & (value >> shift)")
             self.bit(1 & (value >> shift))
 
     def bit_one(self):
-        self.add_transition("x0")
+        # self.add_transition("x0")
         self.add_transition("10")
         self.add_transition("11")
 
     def bit_zero(self):
-        self.add_transition("x0")
+        # self.add_transition("x0")
         self.add_transition("00")
         self.add_transition("01")
 
@@ -83,20 +76,21 @@ class I2cSequencer(Module):
         sdascl = SdaScl()
         for tr in transactions:
             sdascl.start()
-            sdascl.byte(tr.device.address << 1)
-            sdascl.bit(1)  # ACK
-            for data in tr.write:
-                sdascl.byte(data)
+            if len(tr.write):
+                sdascl.byte(tr.device.address << 1)
                 sdascl.bit(1)  # ACK
+                for data in tr.write:
+                    sdascl.byte(data)
+                    sdascl.bit(1)  # ACK
+                if tr.read:
+                    sdascl.restart()
             if tr.read:
-                sdascl.restart()
                 sdascl.byte((tr.device.address << 1) + 1)
                 sdascl.bit(1)  # ACK
                 for _ in range(tr.read):
                     sdascl.byte(0xFF)
                     sdascl.bit(0)  # ACK
             sdascl.stop()
-        print(sdascl.transitions)
 
         # clock divisor
         clkdiv = ceil(fclk / 100E3 / 2)
@@ -125,6 +119,8 @@ class I2cSequencer(Module):
             ),
         ]
         self.comb += [
-            sda.eq(rp.dat_r[1]),
             scl.eq(rp.dat_r[0]),
+        ]
+        self.sync += [
+            sda.eq(rp.dat_r[1]),
         ]

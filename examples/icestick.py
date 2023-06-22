@@ -7,6 +7,7 @@ from migen.build.platforms.icestick import Platform
 from regmap.core.i2c import I2cSequencer
 from regmap.core.models import I2cBus
 from regmap.devices.temp import LM75
+from regmap.devices.gpio import PCF8574
 
 
 _ios = [
@@ -23,12 +24,15 @@ class Top(Module):
 
         bus = I2cBus()
         sensor = LM75(bus)
+        gpio = PCF8574(bus)
 
         transactions = [
             sensor.configuration.write(0b00000100),  # OS active high
             sensor.thyst.write(75 << 8),  # OS inactive when temp falls under 75°C
             sensor.tos.write(80 << 8),  # OS active when temp rises above 80°C
             sensor.temperature.read(),
+            gpio.io.write(0xF0),
+            gpio.io.read(),
         ]
 
         self.submodules.i2c = I2cSequencer(platform.request("i2c"), transactions, 12E6)
