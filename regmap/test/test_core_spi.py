@@ -313,7 +313,11 @@ class TestADS131(unittest.TestCase):
             def __init__(self, pads):
                 self.submodules.spi = SpiMaster(
                     sys_fcy=4E6, min_fcy=1E6, pads=pads, dw=24, sclk_output_idle=False)
-                self.submodules.ads = ADS131M04(4)
+                self.submodules.ads = ADS131M04(config=(4, [
+                    0x7777,  # reg=0x04; Gain=128 for all channels
+                    0x0000,  # reg=0x05; reserved
+                    (0b0011 << 9) | (0b1 << 8),  # reg=0x06; chop mode enable, delay=16
+                ]))
                 self.comb += [
                     self.spi.source.connect(self.ads.spi_sink),
                     self.ads.spi_source.connect(self.spi.sink),
