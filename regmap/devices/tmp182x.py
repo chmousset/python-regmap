@@ -32,7 +32,6 @@ class TMP182x(Module):
             source.valid.eq(1),
             sink.ready.eq(1),  # ignore incoming data
             If(sink.valid,
-                # NextState("READ_SCRATCHPAD-0"),
                 NextState("WAIT_CONVERSION"),
             ),
         )
@@ -91,4 +90,7 @@ class TMP182x(Module):
 
 
 class TMP1826(TMP182x):
+    pass
+
+class TMP1827(TMP182x):
     pass
