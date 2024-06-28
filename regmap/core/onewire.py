@@ -18,6 +18,7 @@ one_wire_byte_operation_layout = one_wire_byte_layout + [
     ("overdrive", 1),
 ]
 
+# https://www.analog.com/en/resources/technical-articles/1wire-communication-through-software.html
 one_wire_timing = {
     "standard": {
         "reset": {
