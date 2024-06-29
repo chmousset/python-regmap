@@ -4,7 +4,7 @@ import argparse
 from migen import Module
 from migen.build.generic_platform import Subsignal, Pins
 from migen.build.platforms.icestick import Platform
-from regmap.core.i2c import I2cSequencer
+from migen.fhdl.specials import TSTriple
 from regmap.core.models import I2cBus
 from regmap.devices.temp import LM75
 from regmap.devices.gpio import PCF8574
