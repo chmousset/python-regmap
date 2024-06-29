@@ -25,6 +25,7 @@ class I2cDevice:
 class I2cReg:
     def __init__(self, device, reg_address, reg_size, big_endian=True, wo=False, ro=False):
         self.device = device
+        self.reg_address = reg_address
         self.transaction_start = [reg_address] if reg_address is not None else []
         self.reg_size = reg_size
         self.big_endian = big_endian

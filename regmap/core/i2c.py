@@ -1,5 +1,7 @@
 from migen import *
 from litex.soc.interconnect import stream
+from migen.genlib.cdc import MultiReg
+
 
 i2c_bit_layout = [
     ("data", 1),
