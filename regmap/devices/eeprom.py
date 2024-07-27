@@ -45,17 +45,21 @@ class EEPROM_MAC(EEPROM_24):
 
         self.submodules.fsm = fsm = FSM("IDLE")
         fsm.act("IDLE",
-            i2c_source.valid.eq(read_eui | ~eui.valid),
+            # setup: write I2C dev address, then memory address
+            i2c_sink.ready.eq(1),
+            i2c_source.valid.eq(read_eui),  # | ~eui.valid),
             i2c_source.first.eq(1),
             i2c_source.data.eq(self.reg_eui.reg_address),
+            i2c_source.write.eq(1),
             If(i2c_source.ready & read_eui,
                 NextState("CHECK_ACK"),
                 NextValue(eui.valid, 0),
             ),
         )
         fsm.act("CHECK_ACK",
+            # the EEPROM should ack its I2C address
             i2c_sink.ready.eq(1),
-            If(i2c_sink.valid,
+            If(i2c_sink.valid & ~i2c_sink.first,
                 If(~i2c_sink.ack,
                     NextState("READ_SETUP")
                 ).Else(
@@ -64,9 +68,12 @@ class EEPROM_MAC(EEPROM_24):
             ),
         )
         fsm.act("READ_SETUP",
+            # generate a restart, write I2C dev address, then read 6 bytes.
+            # on the last byte, generate a stop 
+            i2c_sink.ready.eq(1),
             i2c_source.valid.eq(1),
             i2c_source.first.eq(bytes_read == 0),
-            i2c_source.last.eq(bytes_read == 7),
+            i2c_source.last.eq(bytes_read == 5),
             i2c_source.read.eq(1),
             If(i2c_source.ready,
                 NextState("READ_BYTE"),
@@ -74,18 +81,22 @@ class EEPROM_MAC(EEPROM_24):
         )
         fsm.act("READ_BYTE",
             i2c_sink.ready.eq(1),
-            If(i2c_sink.valid,
+            If(i2c_sink.valid & ~i2c_sink.first,
                 NextValue(bytes_read, bytes_read + 1),
                 Case(bytes_read, {
                     i: [NextValue(eui.eui[i * 8 : i * 8 + 8], i2c_sink.data)]
                     for i in range(6)}),
-                If(bytes_read == 7,
+                If(bytes_read == 5,
                     NextState("IDLE"),
                     NextValue(eui.valid, 1),
+                ).Else(
+                    NextState("READ_BYTE"),
                 ),
             ),
         )
         fsm.act("STOP",
+            # generate only the stop transition
+            i2c_sink.ready.eq(1),
             i2c_source.valid.eq(1),
             i2c_source.last.eq(1),
             If(i2c_source.ready,
