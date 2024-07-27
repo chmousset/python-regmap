@@ -1,6 +1,7 @@
-from migen import *
-from litex.soc.interconnect import stream
+from migen import If, Module, FSM, Signal, Case, NextState, NextValue, Cat, C
+from migen.fhdl.specials import Tristate
 from migen.genlib.cdc import MultiReg
+from litex.soc.interconnect import stream
 from math import ceil
 from litex.gen.genlib.misc import WaitTimer
 
@@ -44,9 +45,9 @@ class I2cPads(Module):
         # # #
         sda_i, scl_i = Signal(), Signal()
         self.specials += Tristate(pads.sda, self.sda, ~self.sda, sda_i)
-        self.specials += MultiReg(sda_i, self.sda_i),
+        self.specials += MultiReg(sda_i, self.sda_i)
         self.specials += Tristate(pads.scl, self.scl, ~self.scl, scl_i)
-        self.specials += MultiReg(scl_i, self.scl_i),
+        self.specials += MultiReg(scl_i, self.scl_i)
 
 
 class I2CTimer(Module):
@@ -109,7 +110,7 @@ class I2cBitOperationRTx(Module):
         # inputs
         self.sink = sink = stream.Endpoint(i2c_bit_operation_layout)
         self.speed = speed = Signal(max=len(fscl))
-        self.reset = reset = Signal()
+        self.reset = Signal()
 
         # outputs
         self.busy = busy = Signal()
@@ -126,7 +127,7 @@ class I2cBitOperationRTx(Module):
         is_write = Signal()
 
         tp4 = [max(0, int(ceil(sys_clk / f / 4) - 1)) for f in fscl]
-        th =  [max(0, int(ceil(sys_clk / f / 2) - 3)) for f in fscl]
+        th = [max(0, int(ceil(sys_clk / f / 2) - 3)) for f in fscl]
         self.submodules.wtp4 = wtp4 = I2CTimer(tp4)
         self.submodules.wth = wth = I2CTimer(th)
         self.submodules.wtto = wtto = WaitTimer(int(sys_clk * timeout))
@@ -240,7 +241,8 @@ class I2cBitOperationRTx(Module):
         )
         fsm.act("BIT_HOLD",
             wtp4.wait.eq(1),
-            If(wtp4.done & source.ready,  # hold befrore generating rising edge. Clock stretch if consumer not ready
+            If(wtp4.done & source.ready,
+                # hold befrore generating rising edge. Clock stretch if consumer not ready
                 wtp4.wait.eq(0),
                 NextValue(scl_o, 1),
                 NextState("BIT_READ"),
@@ -252,7 +254,7 @@ class I2cBitOperationRTx(Module):
             If(scl_i,  # sample data
                 source.valid.eq(1),
                 source.data.eq(sda_i),
-                NextValue(arb_lost, is_write & (bit ^ sda_i)),  # in write operation, we should hold the bus
+                NextValue(arb_lost, is_write & (bit ^ sda_i)),  # write => we should hold the bus
                 NextState("BIT_HIGH"),
             ).Elif(wtto.done,
                 NextState("TIMEOUT"),
@@ -281,7 +283,7 @@ class I2cBitOperationRTx(Module):
             ).Elif(source.ready & source.valid & source.last,  # wait for a STOP
                 NextState("IDLE"),
                 NextValue(busy, 0),
-            ).Elif(sink.valid & prev_scl & scl_i,  # on falling edge, we can setup data to send as a slave
+            ).Elif(sink.valid & prev_scl & scl_i,  # on falling edge, setup data to send as a slave
                 NextState("SLAVE_BIT_SETUP"),
             ),
         )
@@ -344,7 +346,6 @@ class I2cBitOperationRTx(Module):
                 self.fsm.next_state.eq(self.fsm.state.reset),
             ),
         ]
-
 
 
 class I2cBitOperationTx(Module):
@@ -411,7 +412,7 @@ class I2cBitOperationTx(Module):
                     NextValue(pads.scl_o, 1),
                 ).Elif(~pads.sda_i & ~pads.scl_i,
                     NextValue(pads.sda_o, 1),
-                ).Else(# both at 1
+                ).Else(  # both at 1
                     NextValue(pads.sda_o, 0),
                     NextState("IDLE"),
                 ),
@@ -443,7 +444,7 @@ class I2cBitOperationTx(Module):
                     NextValue(pads.sda_o, 0),
                 ).Elif(~pads.sda_i & ~pads.scl_i,
                     NextValue(pads.scl_o, 1),
-                ).Else(# both at 1
+                ).Else(  # both at 1
                     NextValue(pads.scl_o, 0),
                 ),
             ).Else(
@@ -516,7 +517,6 @@ class I2cBitOperationRx(Module):
     def __init__(self, pads_tri):
         # outputs
         self.source = source = stream.Endpoint(i2c_bit_layout)
-        self.busy = busy = Signal()
         self.noise = noise = Signal()
 
         # # #
@@ -618,7 +618,8 @@ class I2cByteOperationTx(Module):
             ),
         )
         fsm.act("ACK",
-            # reading ACK needs to send a recessive 1. If the Master is reading, it then generates an ACK
+            # reading ACK needs to send a recessive 1.
+            # If the Master is reading, it then generates an ACK
             source.valid.eq(1),
             source.data.eq(write),
             If(source.ready,

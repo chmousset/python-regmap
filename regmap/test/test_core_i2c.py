@@ -1,23 +1,25 @@
 import unittest
-import inspect
-from math import ceil
-from migen import *
-from regmap.core.i2c import *
+from migen import Module, Signal
+from migen.sim.core import run_simulation, passive
+from regmap.core.i2c import (
+    I2CTimer, I2cBitOperation, I2cBitOperationRTx, I2cByteOperationRx, I2cByteOperation,
+    I2cOperation
+)
 
 
 class IoTri(Module):
     def __init__(self, input_value):
         signals = ["sda", "scl"]
         for s in signals:
-            self.t = t = TSTriple(1)
-            setattr(self, s+"_o", Signal(name=s + "_o"))
-            setattr(self, s+"_i", Signal(name=s + "_i", reset=1))
-            setattr(self, s+"_external_i", Signal(name=s + "_external_i"))
-            setattr(self, s+"_external_o", Signal(name=s + "_external_o", reset=input_value.get(s, 1)))
-            sig_o = getattr(self, s+"_o")
-            sig_i = getattr(self, s+"_i")
-            external_sig_i = getattr(self, s+"_external_i")
-            external_sig_o = getattr(self, s+"_external_o")
+            setattr(self, s + "_o", Signal(name=s + "_o"))
+            setattr(self, s + "_i", Signal(name=s + "_i", reset=1))
+            setattr(self, s + "_external_i", Signal(name=s + "_external_i"))
+            setattr(self, s + "_external_o", Signal(name=s + "_external_o",
+                reset=input_value.get(s, 1)))
+            sig_o = getattr(self, s + "_o")
+            sig_i = getattr(self, s + "_i")
+            external_sig_i = getattr(self, s + "_external_i")
+            external_sig_o = getattr(self, s + "_external_o")
             pad = Signal(name=s + "_pad")
             self.comb += [
                 pad.eq(sig_o & external_sig_o),
@@ -29,7 +31,8 @@ class IoTri(Module):
 class TestTimer(unittest.TestCase):
     def test(self):
         clk_div = [4, 6]
-        dut= I2CTimer(clk_div)
+        dut = I2CTimer(clk_div)
+
         def assert_done(time):
             for _ in range(time):
                 self.assertEqual((yield dut.done), 0)
@@ -87,7 +90,7 @@ class TestCoreCommon(unittest.TestCase):
 
     def pop_restart(self, dut):
         yield dut.source.ready.eq(1)
-        extra_bits = 0;
+        extra_bits = 0
         while True:
             while (yield dut.source.valid) == 0:
                 yield
@@ -102,7 +105,7 @@ class TestCoreCommon(unittest.TestCase):
 
     def pop_stop(self, dut):
         yield dut.source.ready.eq(1)
-        extra_bits = 0;
+        extra_bits = 0
         while True:
             while (yield dut.source.valid) == 0:
                 yield
@@ -176,7 +179,7 @@ class TestCoreCommon(unittest.TestCase):
 class TestCoreBitOperation(TestCoreCommon):
     def _test_single_bit(self, bit):
         for input_value in [0, 1]:
-            pad = IoTri({"sda": input_value, "scl":1})
+            pad = IoTri({"sda": input_value, "scl": 1})
             print(f"{input_value}")
             dut = I2cBitOperation(
                 pads_tri=pad,
@@ -184,7 +187,8 @@ class TestCoreBitOperation(TestCoreCommon):
             )
             dut.submodules.pad = pad
 
-            run_simulation(dut, [
+            run_simulation(dut,
+                [
                     self.push_bit(dut, bit),
                     self.wait_done(dut),
                     self.pop_bit(dut, bit & input_value),
@@ -206,35 +210,38 @@ class TestCoreBitOperation(TestCoreCommon):
         )
         dut.submodules.pad = pad
 
-        run_simulation(dut, [
+        run_simulation(dut,
+            [
                 self.push_start(dut),
                 self.wait_done(dut),
                 self.pop_start(dut),
             ],
-            vcd_name=f"out/test_core_i2c_bit_start.vcd")
+            vcd_name="out/test_core_i2c_bit_start.vcd")
 
     def test_stop(self):
-        pad = IoTri({"sda": 1, "scl":1})
+        pad = IoTri({"sda": 1, "scl": 1})
         dut = I2cBitOperation(
             pads_tri=pad,
             clk_div=[4, 8],
         )
         dut.submodules.pad = pad
 
-        run_simulation(dut, [
+        run_simulation(dut,
+            [
                 self.push_stop(dut),
                 self.wait_done(dut),
                 self.pop_stop(dut),
             ],
-            vcd_name=f"out/test_core_i2c_bit_stop.vcd")
+            vcd_name="out/test_core_i2c_bit_stop.vcd")
 
     def test_startstop(self):
-        pad = IoTri({"sda": 1, "scl":1})
+        pad = IoTri({"sda": 1, "scl": 1})
         dut = I2cBitOperation(
             pads_tri=pad,
             clk_div=[4, 8],
         )
         dut.submodules.pad = pad
+
         def stim():
             yield
             yield from self.push_start(dut)
@@ -244,21 +251,23 @@ class TestCoreBitOperation(TestCoreCommon):
             yield from self.pop_start(dut)
             yield from self.pop_stop(dut)
 
-        run_simulation(dut, [
+        run_simulation(dut,
+            [
                 self.timeout(50),
                 stim(),
                 # self.wait_done(dut),
                 check(),
             ],
-            vcd_name=f"out/test_core_i2c_bit_start_stop.vcd")
+            vcd_name="out/test_core_i2c_bit_start_stop.vcd")
 
     def test_restart(self):
-        pad = IoTri({"sda": 1, "scl":1})
+        pad = IoTri({"sda": 1, "scl": 1})
         dut = I2cBitOperation(
             pads_tri=pad,
             clk_div=[4, 8],
         )
         dut.submodules.pad = pad
+
         def stim():
             yield
             yield from self.push_start(dut)
@@ -270,19 +279,20 @@ class TestCoreBitOperation(TestCoreCommon):
             yield from self.pop_restart(dut)
             yield from self.pop_stop(dut)
 
-        run_simulation(dut, [
+        run_simulation(dut,
+            [
                 self.timeout(51),
                 stim(),
                 # self.wait_done(dut),
                 check(),
             ],
-            vcd_name=f"out/test_core_i2c_bit_restart.vcd")
-
+            vcd_name="out/test_core_i2c_bit_restart.vcd")
 
 
 class TestCoreByteOperationRx(TestCoreCommon):
     def testStartStop(self):
         dut = I2cByteOperationRx()
+
         def stim():
             yield
             yield from self.push_start(dut)
@@ -292,21 +302,23 @@ class TestCoreByteOperationRx(TestCoreCommon):
             yield from self.pop_start(dut)
             yield from self.pop_stop(dut)
 
-        run_simulation(dut, [
+        run_simulation(dut,
+            [
                 self.timeout(50),
                 stim(),
                 # self.wait_done(dut),
                 check(),
             ],
-            vcd_name=f"out/test_core_i2c_byte_rx_start_stop.vcd")
+            vcd_name="out/test_core_i2c_byte_rx_start_stop.vcd")
 
     def testStartDataStop(self):
         dut = I2cByteOperationRx()
+
         def stim():
             yield
             yield from self.push_start(dut)
             for i in range(8):
-                yield from self.push_bit(dut, 1 if (0x42 & (1<<(7-i))) else 0)
+                yield from self.push_bit(dut, 1 if (0x42 & (1 << (7 - i))) else 0)
             yield from self.push_bit(dut, 1)  # ACK
             yield from self.push_stop(dut)
 
@@ -315,20 +327,22 @@ class TestCoreByteOperationRx(TestCoreCommon):
             yield from self.pop_byte(dut, 0x42, 1)
             yield from self.pop_stop(dut)
 
-        run_simulation(dut, [
+        run_simulation(dut,
+            [
                 self.timeout(300),
                 stim(),
                 # self.wait_done(dut),
                 check(),
             ],
-            vcd_name=f"out/test_core_i2c_byte_rx_start_data_stop.vcd")
+            vcd_name="out/test_core_i2c_byte_rx_start_data_stop.vcd")
 
 
 class TestCoreByteOperation(TestCoreCommon):
     def testStartStop(self):
-        pad = IoTri({"sda": 1, "scl":1})
+        pad = IoTri({"sda": 1, "scl": 1})
         dut = I2cByteOperation(pad, [4, 8])
         dut.submodules.pad = pad
+
         def stim():
             yield
             yield from self.push_start(dut)
@@ -338,18 +352,20 @@ class TestCoreByteOperation(TestCoreCommon):
             yield from self.pop_start(dut)
             yield from self.pop_stop(dut)
 
-        run_simulation(dut, [
+        run_simulation(dut,
+            [
                 self.timeout(50),
                 stim(),
                 # self.wait_done(dut),
                 check(),
             ],
-            vcd_name=f"out/test_core_i2c_byte_start_stop.vcd")
+            vcd_name="out/test_core_i2c_byte_start_stop.vcd")
 
     def testStartDataStop(self):
-        pad = IoTri({"sda": 1, "scl":1})
+        pad = IoTri({"sda": 1, "scl": 1})
         dut = I2cByteOperation(pad, [4, 8])
         dut.submodules.pad = pad
+
         def stim():
             yield
             yield from self.push_start(dut)
@@ -361,18 +377,20 @@ class TestCoreByteOperation(TestCoreCommon):
             yield from self.pop_byte(dut, 0x42, 1)
             yield from self.pop_stop(dut)
 
-        run_simulation(dut, [
+        run_simulation(dut,
+            [
                 self.timeout(250),
                 stim(),
                 # self.wait_done(dut),
                 check(),
             ],
-            vcd_name=f"out/test_core_i2c_byte_start_data_stop.vcd")
+            vcd_name="out/test_core_i2c_byte_start_data_stop.vcd")
 
     def testStartDataStopRead(self):
-        pad = IoTri({"sda": 1, "scl":1})
+        pad = IoTri({"sda": 1, "scl": 1})
         dut = I2cByteOperation(pad, [4, 8])
         dut.submodules.pad = pad
+
         def stim():
             yield
             yield from self.push_start(dut)
@@ -384,18 +402,20 @@ class TestCoreByteOperation(TestCoreCommon):
             yield from self.pop_byte(dut, 0x42, 0)
             yield from self.pop_stop(dut)
 
-        run_simulation(dut, [
+        run_simulation(dut,
+            [
                 self.timeout(250),
                 stim(),
                 # self.wait_done(dut),
                 check(),
             ],
-            vcd_name=f"out/test_core_i2c_byte_start_data_stop_read.vcd")
+            vcd_name="out/test_core_i2c_byte_start_data_stop_read.vcd")
 
 
 class TestI2cOperation(TestCoreCommon):
     def test_r8b(self):
         dut = I2cOperation()
+
         def stim():
             yield
             yield from self.push_op(dut, 1, 1, 0x42, 1, 0, 0x69)
@@ -407,16 +427,18 @@ class TestI2cOperation(TestCoreCommon):
             yield from self.pop_byte(dut, 0xFF)
             yield from self.pop_stop(dut)
 
-        run_simulation(dut, [
+        run_simulation(dut,
+            [
                 self.timeout(250),
                 stim(),
                 # self.wait_done(dut),
                 check(),
             ],
-            vcd_name=f"out/test_core_i2c_operation_r8_0x42_0x69.vcd")
+            vcd_name="out/test_core_i2c_operation_r8_0x42_0x69.vcd")
 
     def test_w8b(self):
         dut = I2cOperation()
+
         def stim():
             yield
             yield from self.push_op(dut, 1, 1, 0x42, 0, 1, 0x69)
@@ -428,16 +450,18 @@ class TestI2cOperation(TestCoreCommon):
             yield from self.pop_byte(dut, 0x69)
             yield from self.pop_stop(dut)
 
-        run_simulation(dut, [
+        run_simulation(dut,
+            [
                 self.timeout(250),
                 stim(),
                 # self.wait_done(dut),
                 check(),
             ],
-            vcd_name=f"out/test_core_i2c_operation_w8_0x42_0x69.vcd")
+            vcd_name="out/test_core_i2c_operation_w8_0x42_0x69.vcd")
 
     def test_w8b_16(self):
         dut = I2cOperation()
+
         def stim():
             yield
             yield from self.push_op(dut, 1, 0, 0x42, 0, 1, 0x69)
@@ -453,16 +477,18 @@ class TestI2cOperation(TestCoreCommon):
             yield from self.pop_byte(dut, 0xad)
             yield from self.pop_stop(dut)
 
-        run_simulation(dut, [
+        run_simulation(dut,
+            [
                 self.timeout(250),
                 stim(),
                 # self.wait_done(dut),
                 check(),
             ],
-            vcd_name=f"out/test_core_i2c_operation_w8_0x42_0x69_0xde_0xad.vcd")
+            vcd_name="out/test_core_i2c_operation_w8_0x42_0x69_0xde_0xad.vcd")
 
     def test_r10b(self):
         dut = I2cOperation()
+
         def stim():
             yield
             yield from self.push_op(dut, 1, 1, 0x42, 1, 0, 0x69, True)
@@ -475,17 +501,18 @@ class TestI2cOperation(TestCoreCommon):
             yield from self.pop_byte(dut, 0xFF)
             yield from self.pop_stop(dut)
 
-        run_simulation(dut, [
+        run_simulation(dut,
+            [
                 self.timeout(500),
                 stim(),
                 check(),
             ],
-            vcd_name=f"out/test_core_i2c_operation_r10_0x42_0x69.vcd")
+            vcd_name="out/test_core_i2c_operation_r10_0x42_0x69.vcd")
 
 
 class TestI2cBit_OperationRTx(TestCoreCommon):
     def test_start_stop(self):
-        pad = IoTri({"sda": 1, "scl":1})
+        pad = IoTri({"sda": 1, "scl": 1})
         dut = I2cBitOperationRTx(pad, 2E6)
         dut.submodules.pad = pad
 
@@ -509,7 +536,7 @@ class TestI2cBit_OperationRTx(TestCoreCommon):
         run_simulation(dut, stim(), vcd_name="out/test_core_OperationRTx_StartBitStop.vcd")
 
     def test_arb_lost(self):
-        pad = IoTri({"sda": 1, "scl":1})
+        pad = IoTri({"sda": 1, "scl": 1})
         dut = I2cBitOperationRTx(pad, 2E6)
         dut.submodules.pad = pad
 
@@ -546,7 +573,7 @@ class TestI2cBit_OperationRTx(TestCoreCommon):
         run_simulation(dut, stim(), vcd_name="out/test_core_OperationRTx_arbitration_lost.vcd")
 
     def test_clk_stretch(self):
-        pad = IoTri({"sda": 1, "scl":1})
+        pad = IoTri({"sda": 1, "scl": 1})
         dut = I2cBitOperationRTx(pad, 2E6)
         dut.submodules.pad = pad
 
@@ -577,7 +604,7 @@ class TestI2cBit_OperationRTx(TestCoreCommon):
         run_simulation(dut, stim(), vcd_name="out/test_core_OperationRTx_clock_stretch.vcd")
 
     def test_reset(self):
-        pad = IoTri({"sda": 1, "scl":1})
+        pad = IoTri({"sda": 1, "scl": 1})
         dut = I2cBitOperationRTx(pad, 2E6)
         dut.submodules.pad = pad
 
@@ -600,7 +627,7 @@ class TestI2cBit_OperationRTx(TestCoreCommon):
         run_simulation(dut, stim(), vcd_name="out/test_core_OperationRTx_reset.vcd")
 
     def test_slave(self):
-        pad = IoTri({"sda": 1, "scl":1})
+        pad = IoTri({"sda": 1, "scl": 1})
         dut = I2cBitOperationRTx(pad, 2E6)
         dut.submodules.pad = pad
 
@@ -633,7 +660,7 @@ class TestI2cBit_OperationRTx(TestCoreCommon):
 
         def byte(dut, b):
             for i in range(8):
-                yield from bit(dut, 1 if b & (1<<7-i) else 0)
+                yield from bit(dut, 1 if b & (1 << (7 - i)) else 0)
             yield from bit(dut, 1)  # Ack
 
         def stim():
