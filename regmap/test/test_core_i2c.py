@@ -533,7 +533,15 @@ class TestI2cBit_OperationRTx(TestCoreCommon):
                 yield
             yield
 
-        run_simulation(dut, stim(), vcd_name="out/test_core_OperationRTx_StartBitStop.vcd")
+        def check():
+            yield from self.pop_start(dut)
+            yield from self.pop_bit(dut, 1)
+            yield from self.pop_bit(dut, 0)
+            yield from self.pop_bit(dut, 1)
+            yield from self.pop_stop(dut)
+
+        run_simulation(dut, [stim(), check()],
+            vcd_name="out/test_core_OperationRTx_start_bit_stop.vcd")
 
     def test_arb_lost(self):
         pad = IoTri({"sda": 1, "scl": 1})
@@ -570,7 +578,13 @@ class TestI2cBit_OperationRTx(TestCoreCommon):
                 yield
             self.assertEqual(0, (yield dut.busy))  # Stop condition detected
 
-        run_simulation(dut, stim(), vcd_name="out/test_core_OperationRTx_arbitration_lost.vcd")
+        def check():
+            yield from self.pop_start(dut)
+            yield from self.pop_bit(dut, 0)
+            yield from self.pop_stop(dut)
+
+        run_simulation(dut, [stim(), check()],
+            vcd_name="out/test_core_OperationRTx_arbitration_lost.vcd")
 
     def test_clk_stretch(self):
         pad = IoTri({"sda": 1, "scl": 1})
@@ -601,7 +615,13 @@ class TestI2cBit_OperationRTx(TestCoreCommon):
                 yield
             yield
 
-        run_simulation(dut, stim(), vcd_name="out/test_core_OperationRTx_clock_stretch.vcd")
+        def check():
+            yield from self.pop_start(dut)
+            yield from self.pop_bit(dut, 1)
+            yield from self.pop_stop(dut)
+
+        run_simulation(dut, [stim(), check()],
+            vcd_name="out/test_core_OperationRTx_clock_stretch.vcd")
 
     def test_reset(self):
         pad = IoTri({"sda": 1, "scl": 1})
@@ -624,12 +644,17 @@ class TestI2cBit_OperationRTx(TestCoreCommon):
             yield
             self.assertEqual(0, (yield dut.busy))
 
-        run_simulation(dut, stim(), vcd_name="out/test_core_OperationRTx_reset.vcd")
+        def check():
+            yield from self.pop_start(dut)
+
+        run_simulation(dut, [stim(), check()],
+            vcd_name="out/test_core_OperationRTx_reset.vcd")
 
     def test_slave(self):
         pad = IoTri({"sda": 1, "scl": 1})
         dut = I2cBitOperationRTx(pad, 2E6)
         dut.submodules.pad = pad
+        val = 0x42
 
         def b4():
             for _ in range(5):
@@ -671,10 +696,18 @@ class TestI2cBit_OperationRTx(TestCoreCommon):
             yield from start(dut)
             self.assertEqual(1, (yield dut.busy))
 
-            yield from byte(dut, 0x42)
+            yield from byte(dut, val)
             yield from stop(dut)
             yield
             yield
             self.assertEqual(0, (yield dut.busy))
 
-        run_simulation(dut, stim(), vcd_name="out/test_core_OperationRTx_slave.vcd")
+        def check():
+            yield from self.pop_start(dut)
+            for i in range(8):
+                yield from self.pop_bit(dut, 1 if val & (1 << (7-i)) else 0)
+            yield from self.pop_bit(dut, 1)  # ack
+            yield from self.pop_stop(dut)
+
+        run_simulation(dut, [stim(), check()],
+            vcd_name="out/test_core_OperationRTx_slave.vcd")
