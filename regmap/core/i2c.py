@@ -357,6 +357,50 @@ class I2cBitOperationRTx(Module):
 
 
 class I2cByteOperationRTx(Module):
+    """Transform I2C Byte operations to Bit operations.
+
+    This module is meant to be interfaced with an I2cBitOperationRTx, and provides Byte-oriented
+    Slave and Master data/control streams.
+
+    Inputs:
+    - sink_master: stream.Endpoint(i2c_byte_operation_layout) - defines which operation to perform:
+      - first=1 => perform a I2C Start condition
+      - last=1 => perform a I2C Stop condition
+      - is_ack => write an ACK. Only required after a transaction when write is set.
+      - ack => if `is_ack` is set, send this Ack value (cleared=Acknowledge).
+      - write => if cleared, writes 0xFF. source_master will provide an Ack.
+        if set, `source_master` does not provide an Ack, as it's produced by the master
+      - first=last=0 => perform a byte transmission
+      - data: Signal(8) - payload
+    - sink_slave: stream.Endpoint(i2c_byte_operation_layout) - Connect to `I2cBitOperationRTx.sink`.
+      - is_ack => write an ACK.
+      - data: Signal(8) - payload
+    - sink_bit: stream.Endpoint(i2c_bit_operation_layout) - Connect `I2cBitOperationRTx.source` to it.
+    - arb_lost_bit: Connect I2cBitOperationRTx.arb_lost to it.
+    - slave_enable: if set during slave operation, clock stretch is performed until
+      `sink_slave.valid` is set.
+    - busy_bit: Connect `I2cBitOperationRTx.busy` to it.
+
+
+    Outputs:
+    - source_master: stream.Endpoint(i2c_byte_operation_layout) - Master activity from the I2C bus
+      - is_ack => if set, only `ack` is valid.
+      - ack => if `is_ack` is set, this is the Ack value (cleared=Acknowledge).
+      - write => if cleared, writes 0xFF. source_master will provide an Ack.
+        if set, `source_master` does not provide an Ack, as it's produced by the master
+      - first=last=0 => perform a byte transmission
+      - data: Signal(8) - payload
+    - source_slave: stream.Endpoint(i2c_byte_operation_layout) - Slave activity from the I2C bus
+      - first=1 => I2C Start condition
+      - last=1 => I2C Stop condition
+      - is_ack => if set, only `ack` is valid.
+      - ack => if `is_ack` is set, this is the Ack value (cleared=Acknowledge).
+      - data: Signal(8) - payload. Only valid when `first` and `last` are cleared.
+    - source_bit: stream.Endpoint(i2c_bit_operation_layout) - Connect to `I2cBitOperationRTx.sink`.
+    - arb_lost: If set, arbitration has been lost. Is also set in slave mode.
+    - busy: reflects the state of the I2C bus. Set both in Slave or Master mode.
+    - clk_stretch: Signal() - Connect to I2cBitOperationRTx.clk_stretch
+    """
     def __init__(self):
         # inputs
         self.sink_master = sink_master = stream.Endpoint(i2c_byte_operation_layout)
@@ -371,7 +415,7 @@ class I2cByteOperationRTx(Module):
         self.source_slave = source_slave = stream.Endpoint(i2c_byte_operation_layout)
         self.source_bit = source_bit = stream.Endpoint(i2c_bit_operation_layout)
         self.arb_lost = arb_lost = Signal()
-        self.clock_stretch = clock_stretch = Signal()
+        self.clk_stretch = clk_stretch = Signal()
         self.busy = busy = Signal()
 
         # # #
@@ -422,7 +466,7 @@ class I2cByteOperationRTx(Module):
                 source_slave.ack.eq(sink_bit.data),
                 source_slave.valid.eq(sink_bit.valid),
                 sink_bit.ready.eq(source_slave.ready),
-                clock_stretch.eq(1),
+                clk_stretch.eq(1),
 
                 If(sink_bit.valid,
                     NextState("ARB_LOST"),
@@ -537,7 +581,7 @@ class I2cByteOperationRTx(Module):
             self.arb_lost_bit.eq(bit.arb_lost),
             self.busy.eq(bit.busy),
             self.source_bit.connect(bit.sink),
-            bit.clock_stretch.eq(self.clock_stretch),
+            bit.clk_stretch.eq(self.clk_stretch),
             bit.source.connect(self.sink_bit),
         ]
 
