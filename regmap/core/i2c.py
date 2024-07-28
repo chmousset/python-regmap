@@ -22,6 +22,8 @@ i2c_byte_layout = [
 i2c_byte_operation_layout = [
     ("data", 8),
     ("write", 1),
+    ("is_ack", 1),
+    ("ack", 1),
 ]
 
 i2c_operation_layout = [
@@ -93,6 +95,8 @@ class I2cBitOperationRTx(Module):
       - last=1 => perform a I2C Stop condition
       - first=last=0 => perform a bit transmission
     - speed: Signal() - select the transmit speed, in order of `fscl` parameter
+    - reset: Signal() - when set, set SDA and SCL high, clear `busy` and go back to IDLE.
+    - clk_stretch: Signal() - when set, in slave mode, stretch clock until `sink.valid`
 
     Outputs:
     - source: stream.Endpoint(i2c_bit_layout) - data received from the I2C bus
@@ -111,6 +115,7 @@ class I2cBitOperationRTx(Module):
         self.sink = sink = stream.Endpoint(i2c_bit_operation_layout)
         self.speed = speed = Signal(max=len(fscl))
         self.reset = Signal()
+        self.clk_stretch = clk_stretch = Signal()
 
         # outputs
         self.busy = busy = Signal()
@@ -282,8 +287,11 @@ class I2cBitOperationRTx(Module):
                 NextState("TIMEOUT"),
             ).Elif(source.ready & source.valid & source.last,  # wait for a STOP
                 NextState("IDLE"),
+                wtto.wait.eq(0),
                 NextValue(busy, 0),
-            ).Elif(sink.valid & prev_scl & scl_i,  # on falling edge, setup data to send as a slave
+            ).Elif((sink.valid & prev_scl & ~scl_i) | clk_stretch,
+                # on falling edge, setup data to send as a slave
+                wtto.wait.eq(0),
                 NextState("SLAVE_BIT_SETUP"),
             ),
         )
@@ -317,7 +325,7 @@ class I2cBitOperationRTx(Module):
         )
         fsm.act("SLAVE_BIT_TRANSMIT",
             If(scl_i,  # rising edge: prepare to send next bit
-                NextState("SLAVE_BIT_SETUP"),
+                NextState("ARB_LOST"),
             ),
         )
         fsm.act("SLAVE_TIMEOUT_RECOVERY",
@@ -345,6 +353,192 @@ class I2cBitOperationRTx(Module):
             If(self.reset,
                 self.fsm.next_state.eq(self.fsm.state.reset),
             ),
+        ]
+
+
+class I2cByteOperationRTx(Module):
+    def __init__(self):
+        # inputs
+        self.sink_master = sink_master = stream.Endpoint(i2c_byte_operation_layout)
+        self.sink_slave = sink_slave = stream.Endpoint(i2c_byte_operation_layout)
+        self.sink_bit = sink_bit = stream.Endpoint(i2c_bit_operation_layout)
+        self.slave_enable = slave_enable = Signal()
+        self.arb_lost_bit = arb_lost_bit = Signal()
+        self.busy_bit = busy_bit = Signal()
+
+        # outputs
+        self.source_master = source_master = stream.Endpoint(i2c_byte_operation_layout)
+        self.source_slave = source_slave = stream.Endpoint(i2c_byte_operation_layout)
+        self.source_bit = source_bit = stream.Endpoint(i2c_bit_operation_layout)
+        self.arb_lost = arb_lost = Signal()
+        self.clock_stretch = clock_stretch = Signal()
+        self.busy = busy = Signal()
+
+        # # #
+        data = Signal(8)
+        data_tx = Signal(8)
+        start = Signal()
+        bitcnt = Signal(max=8)
+        is_write = Signal()
+        self.comb += [
+            arb_lost.eq(arb_lost_bit),
+        ]
+        self.submodules.fsm = fsm = FSM("IDLE")
+        fsm.act("IDLE",
+            sink_bit.ready.eq(1),
+            If(sink_bit.valid & ~sink_bit.last,
+                NextState("ARB_LOST"),
+            ).Else(
+                sink_master.ready.eq(1),
+                If(sink_master.valid & sink_master.first,
+                    NextValue(start, 1),
+                    NextState("MASTER_SEND_START_STOP"),
+                ),
+            ),
+        )
+        fsm.act("ARB_LOST",
+            If(sink_bit.valid,
+                If(sink_bit.last,
+                    NextState("IDLE"),
+                ).Elif(sink_bit.first,
+                    NextValue(bitcnt, 0),
+                ).Elif(bitcnt == 7,
+                    source_slave.valid.eq(1),
+                    source_slave.data.eq(Cat(sink_bit.data, data)),
+                    NextValue(bitcnt, 0),
+                    NextState("SLAVE_ACK"),
+                ).Else(
+                    NextValue(data, Cat(sink_bit.data, data)),
+                    NextValue(bitcnt, bitcnt + 1),
+                )
+            ),
+        )
+        fsm.act("SLAVE_ACK",
+            If(slave_enable,
+                sink_slave.ready.eq(source_bit.ready),
+                source_bit.valid.eq(sink_slave.valid & sink_slave.is_ack),
+                source_bit.data.eq(sink_slave.ack),
+                source_slave.is_ack.eq(1),
+                source_slave.ack.eq(sink_bit.data),
+                source_slave.valid.eq(sink_bit.valid),
+                sink_bit.ready.eq(source_slave.ready),
+                clock_stretch.eq(1),
+
+                If(sink_bit.valid,
+                    NextState("ARB_LOST"),
+                ),
+            ).Else(
+                sink_bit.ready.eq(1),
+                If(sink_bit.valid,
+                    NextState("ARB_LOST"),
+                ),
+            )
+        )
+        fsm.act("MASTER_SEND_START_STOP",
+            source_bit.valid.eq(1),
+            source_bit.first.eq(start),
+            source_bit.last.eq(~start),
+            If(source_bit.valid & source_bit.ready,
+                If(source_bit.last,
+                    NextState("IDLE"),
+                ).Else(
+                    NextState("MASTER"),
+                ),
+            ),
+        )
+        fsm.act("MASTER",
+            sink_master.connect(source_bit, keep=["first", "last", "ready"]),
+            sink_bit.ready.eq(1),
+
+            If(sink_master.valid & sink_master.ready,
+                If(sink_master.first,
+                    NextValue(start, 1),
+                    NextState("MASTER_SEND_START_STOP"),
+                ).Elif(sink_master.last,
+                    NextValue(start, 0),
+                    NextState("MASTER_SEND_START_STOP"),
+                ).Else(
+                    NextValue(data_tx, sink_master.data),
+                    NextValue(bitcnt, 0),
+                    NextValue(is_write, sink_master.write),
+                    NextState("MASTER_TRANSMIT"),
+                )
+            ),
+        )
+        fsm.act("MASTER_TRANSMIT",
+            source_bit.data.eq(~is_write | data_tx[7]),
+            source_bit.valid.eq(1),
+
+            If(source_bit.valid & source_bit.ready,
+                NextValue(data_tx[1:], data_tx),  # Shift left
+                NextState("MASTER_READ_BIT")
+            ),
+        )
+        fsm.act("MASTER_READ_BIT",
+            sink_bit.ready.eq(1),
+
+            If(sink_bit.valid & sink_bit.ready,
+                NextValue(data, Cat(sink_bit.data, data)),
+                NextValue(bitcnt, bitcnt + 1),
+                If(bitcnt == 7,
+                    If(is_write,
+                        NextState("MASTER_ACK"),
+                    ).Else(
+                        NextState("MASTER_READ_BYTE"),
+                    ),
+                ).Else(
+                    NextState("MASTER_TRANSMIT"),
+                ),
+            ),
+            If(arb_lost_bit,
+                NextState("ARB_LOST"),
+            ),
+        )
+        fsm.act("MASTER_READ_BYTE",
+            source_master.valid.eq(1),
+            source_master.data.eq(data),
+            If(source_master.valid & source_master.ready,
+                NextState("MASTER_ACK"),
+            ),
+        )
+        fsm.act("MASTER_ACK",
+            If(is_write,
+                source_bit.valid.eq(1),
+                source_bit.data.eq(1),
+            ).Elif(sink_master.is_ack,
+                source_bit.data.eq(sink_master.ack),
+                source_bit.valid.eq(sink_master.valid),
+                sink_master.ready.eq(source_bit.ready),
+            ),
+            If(source_bit.valid & source_bit.ready,
+                NextState("MASTER_READ_ACK"),
+            )
+        )
+        fsm.act("MASTER_READ_ACK",
+            source_master.is_ack.eq(1),
+            If(is_write,
+                source_master.ack.eq(sink_bit.data),
+                sink_bit.connect(source_master, keep=["valid", "ready"]),
+            ).Else(  # on read, the ACK is produced by the master, no need to read it back
+                sink_bit.ready.eq(1),
+            ),
+            If(sink_bit.valid & sink_bit.ready,
+                NextState("MASTER"),
+                If(is_write & sink_bit.data,
+                    NextValue(start, 0),
+                    NextState("MASTER_SEND_START_STOP"),
+                ),
+            ),
+        )
+        self.comb += busy.eq(busy_bit | ~self.fsm.ongoing("IDLE"))
+
+    def connect_bit(self, bit):
+        self.comb += [
+            self.arb_lost_bit.eq(bit.arb_lost),
+            self.busy.eq(bit.busy),
+            self.source_bit.connect(bit.sink),
+            bit.clock_stretch.eq(self.clock_stretch),
+            bit.source.connect(self.sink_bit),
         ]
 
 

@@ -3,7 +3,7 @@ from migen import Module, Signal
 from migen.sim.core import run_simulation, passive
 from regmap.core.i2c import (
     I2CTimer, I2cBitOperation, I2cBitOperationRTx, I2cByteOperationRx, I2cByteOperation,
-    I2cOperation
+    I2cOperation, I2cByteOperationRTx
 )
 
 
@@ -541,7 +541,7 @@ class TestI2cBit_OperationRTx(TestCoreCommon):
             yield from self.pop_stop(dut)
 
         run_simulation(dut, [stim(), check()],
-            vcd_name="out/test_core_OperationRTx_start_bit_stop.vcd")
+            vcd_name="out/test_core_I2cOperationRTx_start_bit_stop.vcd")
 
     def test_arb_lost(self):
         pad = IoTri({"sda": 1, "scl": 1})
@@ -584,7 +584,7 @@ class TestI2cBit_OperationRTx(TestCoreCommon):
             yield from self.pop_stop(dut)
 
         run_simulation(dut, [stim(), check()],
-            vcd_name="out/test_core_OperationRTx_arbitration_lost.vcd")
+            vcd_name="out/test_core_I2cOperationRTx_arbitration_lost.vcd")
 
     def test_clk_stretch(self):
         pad = IoTri({"sda": 1, "scl": 1})
@@ -621,7 +621,7 @@ class TestI2cBit_OperationRTx(TestCoreCommon):
             yield from self.pop_stop(dut)
 
         run_simulation(dut, [stim(), check()],
-            vcd_name="out/test_core_OperationRTx_clock_stretch.vcd")
+            vcd_name="out/test_core_I2cOperationRTx_clock_stretch.vcd")
 
     def test_reset(self):
         pad = IoTri({"sda": 1, "scl": 1})
@@ -648,7 +648,7 @@ class TestI2cBit_OperationRTx(TestCoreCommon):
             yield from self.pop_start(dut)
 
         run_simulation(dut, [stim(), check()],
-            vcd_name="out/test_core_OperationRTx_reset.vcd")
+            vcd_name="out/test_core_I2cOperationRTx_reset.vcd")
 
     def test_slave(self):
         pad = IoTri({"sda": 1, "scl": 1})
@@ -710,4 +710,134 @@ class TestI2cBit_OperationRTx(TestCoreCommon):
             yield from self.pop_stop(dut)
 
         run_simulation(dut, [stim(), check()],
-            vcd_name="out/test_core_OperationRTx_slave.vcd")
+            vcd_name="out/test_core_I2cOperationRTx_slave.vcd")
+
+
+def push(ep, data, zero=True, timeout=None):
+    if zero:
+        for sig, _ in ep.iter_flat():
+            if sig == ep.ready:
+                continue
+            yield sig.eq(0)
+
+    for k, v in data.items():
+        yield getattr(ep, k).eq(v)
+
+    if timeout is None:
+        timeout = -1
+
+    yield ep.valid.eq(1)
+    yield
+    while (yield ep.ready) == 0:
+        if timeout == 0:
+            raise Exception("Timeout")
+        if timeout is not None:
+            timeout -= 1
+        yield
+    yield ep.valid.eq(0)
+
+
+def pop(ep, expected_data={}, timeout=None):
+    if timeout is None:
+        timeout = -1
+
+    yield ep.ready.eq(1)
+    yield
+    while (yield ep.valid) == 0:
+        if timeout == 0:
+            raise Exception("Timeout")
+        if timeout is not None:
+            timeout -= 1
+        yield
+    for k, v in expected_data.items():
+        val = (yield getattr(ep, k))
+        if (val != v):
+            raise ValueError("Expected {k}={v} but readback value = {val}")
+    yield ep.ready.eq(0)
+
+
+class TestI2cByteOperationRTx(TestCoreCommon):
+    def test_master_w_r(self):
+        dut = I2cByteOperationRTx()
+
+        def stim():
+            # Start
+            yield from push(dut.sink_master, {"first": 1}, timeout=20)
+
+            # write one byte
+            yield from push(dut.sink_master, {"write": 1, "data": 0x42}, timeout=20)
+            yield from pop(dut.source_master, {"is_ack": 1, "ack": 0}, timeout=20)
+
+            # read one byte
+            yield from push(dut.sink_master, {}, timeout=20)
+            yield from pop(dut.source_master, {"data": 0xDE}, timeout=40)
+            yield from push(dut.sink_master, {"is_ack": 1}, timeout=20)
+
+            # Stop
+            yield from push(dut.sink_master, {"last": 1}, timeout=40)
+
+        def check():
+            # yield
+            yield from pop(dut.source_bit, {"first": 1}, timeout=20)
+            yield from push(dut.sink_bit, {"first": 1}, timeout=20)
+            yield
+
+            for i in range(8):
+                bit = 0b1 & (0x42 >> (7 - i))
+                yield from pop(dut.source_bit, {"data": bit}, timeout=20)
+                yield from push(dut.sink_bit, {"data": bit}, timeout=20)
+            yield from pop(dut.source_bit, {"data": 1}, timeout=20)
+            yield from push(dut.sink_bit, {"data": 0}, timeout=20)
+
+            for i in range(8):
+                bit = 0b1 & (0xDE >> (7 - i))
+                yield from pop(dut.source_bit, {"data": 1}, timeout=20)
+                yield from push(dut.sink_bit, {"data": bit}, timeout=20)
+            yield from pop(dut.source_bit, timeout=20)
+            yield from push(dut.sink_bit, {"data": 1}, timeout=20)
+
+
+            yield from pop(dut.source_bit, {"last": 1}, timeout=20)
+            yield from push(dut.sink_bit, {"last": 1}, timeout=20)
+
+            yield
+
+        run_simulation(dut, [stim(), check()],
+            vcd_name="out/test_core_I2cByteOperationRTx_master_w_r.vcd")
+
+    def test_master_w_noack(self):
+        dut = I2cByteOperationRTx()
+
+        def stim():
+            # Start
+            yield from push(dut.sink_master, {"first": 1}, timeout=20)
+
+            # write one byte
+            yield from push(dut.sink_master, {"write": 1, "data": 0x42}, timeout=20)
+            yield from pop(dut.source_master, {"is_ack": 1, "ack": 1}, timeout=20)
+
+            for _ in range(2):
+                yield
+            self.assertEqual((yield dut.busy), 0)
+
+        def check():
+            # yield
+            yield from pop(dut.source_bit, {"first": 1}, timeout=20)
+            yield from push(dut.sink_bit, {"first": 1}, timeout=20)
+            yield
+
+            for i in range(8):
+                bit = 0b1 & (0x42 >> (7 - i))
+                yield from pop(dut.source_bit, {"data": bit}, timeout=20)
+                yield from push(dut.sink_bit, {"data": bit}, timeout=20)
+            yield from pop(dut.source_bit, {"data": 1}, timeout=20)
+            yield from push(dut.sink_bit, {"data": 1}, timeout=20)
+
+            # since the ACK=1, the write stops there
+            yield from pop(dut.source_bit, {"last": 1}, timeout=20)
+            yield from push(dut.sink_bit, {"last": 1}, timeout=20)
+
+            yield
+
+        run_simulation(dut, [stim(), check()],
+            vcd_name="out/test_core_I2cByteOperationRTx_master_w_noack.vcd")
