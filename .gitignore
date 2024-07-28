@@ -1,7 +1,9 @@
 *.vcd
 /env/
 __pycache__/
-build/
+/build/
+/out/
+/.*/
 *.egg-info/
 _autosummary/
 _build/
@@ -10,3 +12,4 @@ _build/
 vivado*
 *.log
 *.jou
+pyrightconfig.json
