@@ -1,13 +1,16 @@
+[build-system]
+requires = ["setuptools>=61"]
+build-backend = "setuptools.build_meta"
+
 [project]
 name = "regmap"
 version = "0.1.0"
-description = "A gateware-based I2C bus and device control library build on Migen"
+description = "A gateware-based I2C bus and device control library built on Migen"
 readme = "README.md"
 requires-python = ">=3.7"
 keywords = ["FPGA", "Gateware", "I2C", "SMB"]
-# license = "MIT"
 authors = [
-     { name = "Charles-Henri Mousset", email = "ch.mousset@gmail.com" },
+    { name = "Charles-Henri Mousset", email = "ch.mousset@gmail.com" },
 ]
 classifiers = [
     "Topic :: Software Development :: Build Tools",
@@ -15,36 +18,20 @@ classifiers = [
     "Development Status :: 2 - Pre-Alpha",
     "Topic :: System :: Hardware"
 ]
+license = "BSD-2"
 
 [project.urls]
-"Homepage" = "https://github.com/chmousset/python-regmap"
+Homepage = "https://github.com/chmousset/python-regmap"
 
-[tool.poetry]
-packages = [
-    { include = "regmap" },
-]
-
-[tool.setuptools]
-py-modules = ["regmap"]
-
-[dependencies]
-# migen = "^0.9.2"
-# litex = "^2023.12"
-# For doc generation
-sphinx = {version = "^6.2.1", optional = true }
-sphinx-rtd-theme = {version = "^1.2.1", optional = true }
-recommonmark = {version = "^0.7.1", optional = true }
-sphinx_autodoc_typehints = {version = "^1.23.0", optional = true }
-sphinxcontrib_wavedrom = {version = "^3.0.4", optional = true }
-sphinxcontrib_svgbob = {version = "^0.2.1", optional = true }
-
-[tool.poetry.extras]
+[project.optional-dependencies]
 doc = [
-    "sphinx",
-    "sphinx-rtd-theme",
-    "recommonmark",
-    "sphinx_autodoc_typehints",
-    "sphinxcontrib_wavedrom",
-    "sphinxcontrib_svgbob",
+    "sphinx>=6.2.1",
+    "sphinx-rtd-theme>=1.2.1",
+    "recommonmark>=0.7.1",
+    "sphinx_autodoc_typehints>=1.23.0",
+    "sphinxcontrib_wavedrom>=3.0.4",
+    "sphinxcontrib_svgbob>=0.2.1"
 ]
-dev = []
+
+[tool.setuptools.packages.find]
+include = ["regmap"]
