@@ -1,10 +1,175 @@
 import unittest
-from migen import Module, Signal
+from migen import Module, Signal, If
 from migen.sim.core import run_simulation, passive
 from regmap.core.i2c import (
     I2CTimer, I2cBitOperation, I2cBitOperationRTx, I2cByteOperationRx, I2cByteOperation,
     I2cOperation, I2cByteOperationRTx
 )
+
+
+class I2cDevice(Module):
+    def __init__(self):
+        self.sda_i = Signal(reset=1)
+        self.sda_o = Signal(reset=1)
+        self.scl_i = Signal(reset=1)
+        self.scl_o = Signal(reset=1)
+
+    @passive
+    def edge_detect(self):
+        step = 0
+        last_sda = (yield self.sda_i)
+        last_scl = (yield self.scl_i)
+        while True:
+            sda = (yield self.sda_i)
+            scl = (yield self.scl_i)
+            # print(f"step={step}, {last_sda}=>{sda} {last_scl}=>{scl}")
+            step += 1
+
+            self.sda_rising = (last_sda, sda) == (0, 1)
+            self.sda_falling = (last_sda, sda) == (1, 0)
+            self.scl_rising = (last_scl, scl) == (0, 1)
+            self.scl_falling = (last_scl, scl) == (1, 0)
+            self.is_start = (scl == 1) and self.sda_falling
+            self.is_stop = (scl == 1) and self.sda_rising
+
+            last_sda = sda
+            last_scl = scl
+            yield
+
+
+    def wait_idle(self):
+        while ((yield self.sda_i), (yield self.scl_i)) != (1,1):
+            yield
+
+    def wait_start(self):
+        while True:
+            if self.is_start:
+                break
+            yield
+
+    def wait_stop(self):
+        while True:
+            if self.is_stop:
+                break
+            yield
+
+    def wait_bit(self):
+        print("    wait bit")
+        while True:
+            if self.scl_rising:
+                self.bit = (yield self.sda_i)
+                print(f"    got bit {self.bit}")
+                break
+            if self.is_stop:
+                break
+            yield
+
+    def wait_byte(self, ack_address=None, ack=None):
+        print("## wait byte")
+        self.byte = 0
+        for _ in range(8):
+            if self.is_stop:
+                yield
+                return
+            yield from self.wait_bit()
+            yield
+            self.byte = (self.byte << 1) + self.bit
+        print(f"  got byte: 0x{self.byte:X}={self.byte}")
+        if self.is_stop:
+            yield
+            return
+        if ack is not None:
+            yield from self.send_ack(ack)
+            yield
+        elif ack_address is not None:
+            yield from self.send_ack((self.byte & 0xFE) == ack_address)
+            yield
+
+
+    def send_ack(self, ack=True):
+        print(f"  send ack {ack}")
+        yield from self.send_bit(0 if ack else 1)
+        yield
+        yield from self.send_bit(1)
+
+    def send_bit(self, bit):  # transmit a bit
+        while not self.scl_falling:
+            if self.is_stop:
+                return self.sda_o.eq(1)
+            yield
+        yield self.sda_o.eq(bit)
+
+    def send_byte(sef, byte):
+        for bit in range(7, -1, -1):
+            yield from self.bit(1 if byte & (1<<bit) else 0)
+            if self.is_stop:
+                break
+
+
+class I2cMem(I2cDevice):
+    def __init__(self, address=0x50, address_bytes=1, mem={}):
+        super().__init__()
+        self.mem_address = 0
+        self.address = address
+        self.address_bytes = address_bytes
+        self.mem = mem
+
+    @passive
+    def sim(self):
+        yield # update last
+        while True:
+            yield from self.wait_idle()
+            yield from self.wait_start()
+            yield from self.wait_byte(ack_address=self.address)
+            if self.is_stop:
+                continue
+            if self.byte & 0xfe == self.address:
+                if self.byte & 0b1 == 1:  # read operation
+                    while True:
+                        yield from self.send_byte(self.mem.get(self.mem_address, 0))
+                        self.mem_address = (self.mem_address + 1) % (256**self.address_bytes)
+                        if self.is_stop:
+                            break
+                        yield from self.wait_bit()  # ACK
+                        if self.bit:  # NACK: now we're passive
+                            yield self.sda_o.eq(1)
+                            yield from self.wait_stop()
+                            break
+                else:  # write operation
+                    self.mem_address = 0
+                    for _ in range(self.address_bytes):
+                        yield from self.wait_byte(ack=True)
+                        self.mem_address = self.mem_address << 8 | self.byte
+
+                    while True:
+                        print(f"mem_address={self.mem_address} / keys={self.mem.keys()}")
+                        yield from self.wait_byte(ack=self.mem_address in self.mem.keys())
+                        if self.mem_address not in self.mem.keys():
+                            yield self.sda_o.eq(1)  # go passive
+                            yield from self.wait_stop()
+                            break
+
+                        print("Update mem: {}", {self.mem_address: self.byte})
+                        self.mem.update({self.mem_address: self.byte})
+                        self.mem_address = (self.mem_address + 1) % (256**self.address_bytes)
+
+
+
+class I2cBus(Module):
+    def __init__(self, pads_list):
+        self.sda_bus = sda = Signal(reset=1)
+        self.scl_bus = scl = Signal(reset=1)
+        for pads in pads_list:
+            self.comb += [
+                pads.sda_i.eq(sda),
+                pads.scl_i.eq(scl),
+                If(~pads.sda_o,
+                    sda.eq(0),
+                ),
+                If(~pads.scl_o,
+                    scl.eq(0),
+                ),
+            ]
 
 
 class IoTri(Module):
@@ -149,13 +314,14 @@ class TestCoreCommon(unittest.TestCase):
             yield
         yield (dut.sink.valid.eq(0))
 
-    def pop_byte(self, dut, expected_byte, expected_ack=None):
+    def pop_byte(self, dut, expected_byte=None, expected_ack=None):
         yield dut.source.ready.eq(1)
         while (yield dut.source.valid) == 0:
             yield
         self.assertEqual((yield dut.source.first), 0)
         self.assertEqual((yield dut.source.last), 0)
-        self.assertEqual((yield dut.source.data), expected_byte)
+        if expected_byte:
+            self.assertEqual((yield dut.source.data), expected_byte)
         if expected_ack is not None:
             self.assertEqual((yield dut.source.ack), expected_ack)
         yield
@@ -226,8 +392,12 @@ class TestCoreBitOperation(TestCoreCommon):
         )
         dut.submodules.pad = pad
 
+        def stim():
+            yield dut.source.ready.eq(1)
+
         run_simulation(dut,
             [
+                stim(),
                 self.push_stop(dut),
                 self.wait_done(dut),
                 self.pop_stop(dut),
@@ -510,6 +680,46 @@ class TestI2cOperation(TestCoreCommon):
             vcd_name="out/test_core_i2c_operation_r10_0x42_0x69.vcd")
 
 
+    def test_mem_w69_16(self):
+        pads = IoTri({"sda": 1, "scl": 1})
+        op = I2cOperation()
+        byte_op = I2cByteOperation(pads, 2)
+        mem = I2cMem(mem={0x69: 0x00, 0x6A: 0x01})
+        bus = I2cBus([pads, mem])
+        top = Module()
+        top.comb += [ op.source.connect(byte_op.sink) ]
+        top.submodules += op, byte_op, mem, bus
+
+        def stim():
+            yield byte_op.source.ready.eq(1)
+            yield
+            yield from self.push_op(op, 1, 0, 0x50>>1, 0, 1, 0x69)
+            yield from self.push_op(op, 0, 0, 0, 0, 1, 0xde)
+            yield from self.push_op(op, 0, 1, 0, 0, 1, 0xad)
+            # yield from self.push_op(op, 0, 1, 0, 0, 1, 0xbe)
+            yield
+
+        def check():
+            yield
+            while mem.is_stop == 0:
+                yield
+            yield
+            yield
+
+        run_simulation(top,
+            [
+                self.timeout(650),
+                stim(),
+                # self.wait_done(dut),
+                check(),
+                mem.edge_detect(),
+                mem.sim(),
+            ],
+            vcd_name="out/test_core_i2c_operation_mem_w69_0xde_0xad.vcd")
+        print(f"mem={mem.mem}")
+        assert(mem.mem == {0x69: 0xde, 0x6A: 0xad})
+
+
 class TestI2cBit_OperationRTx(TestCoreCommon):
     def test_start_stop(self):
         pad = IoTri({"sda": 1, "scl": 1})
@@ -517,30 +727,32 @@ class TestI2cBit_OperationRTx(TestCoreCommon):
         dut.submodules.pad = pad
 
         def stim():
-            yield
-            yield dut.source.ready.eq(1)
-            yield dut.sink.write.eq(1)
-            yield from self.push_start(dut)
-            yield from self.push_bit(dut, 1)
-            yield from self.push_bit(dut, 0)
-            yield from self.push_bit(dut, 1)
-            yield from self.push_stop(dut)
-            timeout = 20
-            while (yield dut.busy) == 1:
-                timeout -= 1
-                if timeout == 0:
-                    raise Exception("Still busy")
+            for _ in range(2):
                 yield
-            yield
+                yield dut.source.ready.eq(1)
+                yield dut.sink.write.eq(1)
+                yield from self.push_start(dut)
+                yield from self.push_bit(dut, 1)
+                yield from self.push_bit(dut, 0)
+                yield from self.push_bit(dut, 1)
+                yield from self.push_stop(dut)
+                timeout = 20
+                while (yield dut.busy) == 1:
+                    timeout -= 1
+                    if timeout == 0:
+                        raise Exception("Still busy")
+                    yield
+                yield
 
         def check():
-            yield from self.pop_start(dut)
-            yield from self.pop_bit(dut, 1)
-            yield from self.pop_bit(dut, 0)
-            yield from self.pop_bit(dut, 1)
-            yield from self.pop_stop(dut)
+            for _ in range(2):
+                yield from self.pop_start(dut)
+                yield from self.pop_bit(dut, 1)
+                yield from self.pop_bit(dut, 0)
+                yield from self.pop_bit(dut, 1)
+                yield from self.pop_stop(dut)
 
-        run_simulation(dut, [stim(), check()],
+        run_simulation(dut, [stim(), check(), self.timeout(200)],
             vcd_name="out/test_core_I2cOperationRTx_start_bit_stop.vcd")
 
     def test_arb_lost(self):
@@ -761,46 +973,48 @@ class TestI2cByteOperationRTx(TestCoreCommon):
         dut = I2cByteOperationRTx()
 
         def stim():
-            # Start
-            yield from push(dut.sink_master, {"first": 1}, timeout=20)
+            for _ in range(2):
+                # Start
+                yield from push(dut.sink_master, {"first": 1}, timeout=20)
 
-            # write one byte
-            yield from push(dut.sink_master, {"write": 1, "data": 0x42}, timeout=20)
-            yield from pop(dut.source_master, {"is_ack": 1, "ack": 0}, timeout=20)
+                # write one byte
+                yield from push(dut.sink_master, {"write": 1, "data": 0x42}, timeout=20)
+                yield from pop(dut.source_master, {"is_ack": 1, "ack": 0}, timeout=20)
 
-            # read one byte
-            yield from push(dut.sink_master, {}, timeout=20)
-            yield from pop(dut.source_master, {"data": 0xDE}, timeout=40)
-            yield from push(dut.sink_master, {"is_ack": 1}, timeout=20)
+                # read one byte
+                yield from push(dut.sink_master, {}, timeout=20)
+                yield from pop(dut.source_master, {"data": 0xDE}, timeout=40)
+                yield from push(dut.sink_master, {"is_ack": 1}, timeout=20)
 
-            # Stop
-            yield from push(dut.sink_master, {"last": 1}, timeout=40)
+                # Stop
+                yield from push(dut.sink_master, {"last": 1}, timeout=40)
 
         def check():
-            # yield
-            yield from pop(dut.source_bit, {"first": 1}, timeout=20)
-            yield from push(dut.sink_bit, {"first": 1}, timeout=20)
-            yield
+            for _ in range(2):
+                # yield
+                yield from pop(dut.source_bit, {"first": 1}, timeout=20)
+                yield from push(dut.sink_bit, {"first": 1}, timeout=20)
+                yield
 
-            for i in range(8):
-                bit = 0b1 & (0x42 >> (7 - i))
-                yield from pop(dut.source_bit, {"data": bit}, timeout=20)
-                yield from push(dut.sink_bit, {"data": bit}, timeout=20)
-            yield from pop(dut.source_bit, {"data": 1}, timeout=20)
-            yield from push(dut.sink_bit, {"data": 0}, timeout=20)
-
-            for i in range(8):
-                bit = 0b1 & (0xDE >> (7 - i))
+                for i in range(8):
+                    bit = 0b1 & (0x42 >> (7 - i))
+                    yield from pop(dut.source_bit, {"data": bit}, timeout=20)
+                    yield from push(dut.sink_bit, {"data": bit}, timeout=20)
                 yield from pop(dut.source_bit, {"data": 1}, timeout=20)
-                yield from push(dut.sink_bit, {"data": bit}, timeout=20)
-            yield from pop(dut.source_bit, timeout=20)
-            yield from push(dut.sink_bit, {"data": 1}, timeout=20)
+                yield from push(dut.sink_bit, {"data": 0}, timeout=20)
+
+                for i in range(8):
+                    bit = 0b1 & (0xDE >> (7 - i))
+                    yield from pop(dut.source_bit, {"write": 0}, timeout=20)
+                    yield from push(dut.sink_bit, {"data": bit}, timeout=20)
+                yield from pop(dut.source_bit, timeout=20)
+                yield from push(dut.sink_bit, {"data": 1}, timeout=20)
 
 
-            yield from pop(dut.source_bit, {"last": 1}, timeout=20)
-            yield from push(dut.sink_bit, {"last": 1}, timeout=20)
+                yield from pop(dut.source_bit, {"last": 1}, timeout=20)
+                yield from push(dut.sink_bit, {"last": 1}, timeout=20)
 
-            yield
+                yield
 
         run_simulation(dut, [stim(), check()],
             vcd_name="out/test_core_I2cByteOperationRTx_master_w_r.vcd")

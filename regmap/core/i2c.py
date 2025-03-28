@@ -46,9 +46,9 @@ class I2cPads(Module):
 
         # # #
         sda_i, scl_i = Signal(), Signal()
-        self.specials += Tristate(pads.sda, self.sda, ~self.sda, sda_i)
+        self.specials += Tristate(pads.sda, self.sda_o, ~self.sda_o, sda_i)
         self.specials += MultiReg(sda_i, self.sda_i)
-        self.specials += Tristate(pads.scl, self.scl, ~self.scl, scl_i)
+        self.specials += Tristate(pads.scl, self.scl_o, ~self.scl_o, scl_i)
         self.specials += MultiReg(scl_i, self.scl_i)
 
 
@@ -64,7 +64,6 @@ class I2CTimer(Module):
 
         # # #
         cnt = Signal(max=max(clk_div) + 1, reset=max(clk_div))
-        print(f"cnt={cnt}")
         self.comb += done.eq(cnt == 0)
         self.sync += [
             If(~wait,
@@ -108,7 +107,7 @@ class I2cBitOperationRTx(Module):
       mode
     - noise: illegal transitions on SCL or SDA have been detected.
     - busy: reflects the state of the I2C bus. Set both in Slave or Master mode.
-
+    - timeout: set when the bus is blocked for more than `timeout` parameter.
     """
     def __init__(self, pads_tri, sys_clk, fscl=[100E3, 400E3, 1E6], timeout=10E-3):
         # inputs
@@ -122,6 +121,7 @@ class I2cBitOperationRTx(Module):
         self.arb_lost = arb_lost = Signal()
         self.source = source = stream.Endpoint(i2c_bit_layout)
         self.noise = noise = Signal()
+        self.timeout = _timeout = Signal()
 
         # # #
         sda_i = pads_tri.sda_i
@@ -139,6 +139,7 @@ class I2cBitOperationRTx(Module):
         self.comb += [
             wtp4.speed.eq(speed),
             wth.speed.eq(speed),
+            _timeout.eq(wtto.done),
         ]
         pads_tri.sda_o.reset = 1
         pads_tri.scl_o.reset = 1
@@ -180,7 +181,11 @@ class I2cBitOperationRTx(Module):
             ).Elif(sink.valid,
                 NextValue(busy, 1),
                 If(sink.first,
-                    NextState("START"),
+                    If(sda_i & scl_i,
+                        NextState("START"),
+                    ).Else(
+                        NextState("RESTART"),
+                    ),
                 ).Elif(sink.last,
                     NextState("STOP"),
                 ).Else(
@@ -190,45 +195,60 @@ class I2cBitOperationRTx(Module):
                 ),
             ),
         )
+        fsm.act("RESTART",
+            wth.wait.eq(sda_i),
+            wtto.wait.eq(1),
+            # If(~sda_i | ~scl_i,
+            #     NextState("ARB_LOST"),
+            # ),
+            If(wtto.done,
+                NextState("TIMEOUT"),
+            ).Elif(wth.done,
+                wth.wait.eq(0),
+                NextValue(scl_o, 1),
+                NextState("START"),
+            ),
+        )
         fsm.act("START",
-            wtp4.wait.eq(scl_i),
-            If(~sda_i | ~scl_i,
+            source.valid.eq(0),  # mask possible spurious bit caused by restart
+            wth.wait.eq(scl_i),
+            If(~sda_i,
                 NextState("ARB_LOST"),
             ),
-            If(wtp4.done,
-                wtp4.wait.eq(0),
+            If(wth.done,
+                wth.wait.eq(0),
                 NextValue(sda_o, 0),
                 NextState("START2"),
             ),
         )
         fsm.act("START2",
-            wtp4.wait.eq(1),
-            If(wtp4.done,
-                wtp4.wait.eq(0),
+            wth.wait.eq(1),
+            If(wth.done,
+                wth.wait.eq(0),
                 NextValue(scl_o, 0),
                 NextState("IDLE"),
             ),
         )
         fsm.act("STOP",
-            wtp4.wait.eq(~scl_i),  # wait for SCL to be 0 for Tp/4
-            If(wtp4.done,
-                wtp4.wait.eq(0),
+            wth.wait.eq(~scl_i),  # wait for SCL to be 0 for Tp/4
+            If(wth.done,
+                wth.wait.eq(0),
                 NextValue(sda_o, 0),  # SDA should be at 0 to create a rising edge
                 NextState("STOP2"),
             ),
         )
         fsm.act("STOP2",
-            wtp4.wait.eq(1),
-            If(wtp4.done,
-                wtp4.wait.eq(0),
+            wth.wait.eq(1),
+            If(wth.done,
+                wth.wait.eq(0),
                 NextValue(scl_o, 1),
                 NextState("STOP3"),
             ),
         )
         fsm.act("STOP3",
-            wtp4.wait.eq(1),
-            If(wtp4.done,
-                wtp4.wait.eq(0),
+            wth.wait.eq(1),
+            If(wth.done,
+                wth.wait.eq(0),
                 NextValue(sda_o, 1),
                 NextState("IDLE"),
                 NextValue(busy, 0),
@@ -240,6 +260,8 @@ class I2cBitOperationRTx(Module):
                 wtp4.wait.eq(0),
                 If(is_write,
                     NextValue(sda_o, bit),  # drive SDA only for write operations
+                ).Else(
+                    NextValue(sda_o, 1),
                 ),
                 NextState("BIT_HOLD"),
             ),
@@ -247,8 +269,12 @@ class I2cBitOperationRTx(Module):
         fsm.act("BIT_HOLD",
             wtp4.wait.eq(1),
             If(wtp4.done & source.ready,
-                # hold befrore generating rising edge. Clock stretch if consumer not ready
+                # hold before generating rising edge. Clock stretch if consumer not ready
                 wtp4.wait.eq(0),
+                # If(~sda_i & sda_o,
+                #     NextState("ARB_LOST"),
+                # ).Else(
+                # ),
                 NextValue(scl_o, 1),
                 NextState("BIT_READ"),
             ),
@@ -510,7 +536,8 @@ class I2cByteOperationRTx(Module):
             ),
         )
         fsm.act("MASTER_TRANSMIT",
-            source_bit.data.eq(~is_write | data_tx[7]),
+            source_bit.data.eq(data_tx[7]),
+            source_bit.write.eq(is_write),
             source_bit.valid.eq(1),
 
             If(source_bit.valid & source_bit.ready,
@@ -550,6 +577,7 @@ class I2cByteOperationRTx(Module):
                 source_bit.valid.eq(1),
                 source_bit.data.eq(1),
             ).Elif(sink_master.is_ack,
+                source_bit.write.eq(1),
                 source_bit.data.eq(sink_master.ack),
                 source_bit.valid.eq(sink_master.valid),
                 sink_master.ready.eq(source_bit.ready),
@@ -577,7 +605,7 @@ class I2cByteOperationRTx(Module):
         self.comb += busy.eq(busy_bit | ~self.fsm.ongoing("IDLE"))
 
     def connect_bit(self, bit):
-        self.comb += [
+        return [
             self.arb_lost_bit.eq(bit.arb_lost),
             self.busy.eq(bit.busy),
             self.source_bit.connect(bit.sink),
@@ -662,28 +690,34 @@ class I2cBitOperationTx(Module):
             # |     Actual          |           Next          |
             # | SDA_i | SDA_O | SCL | SDA | SCL |    State    |
             # |-------|-------|-----|-----|-----|-------------|
-            # |   0   |   0   |  1  |  1  |     |             |
+            # |   0   |   0   |  1  |  1  |     |    IDLE     |
             # |   0   |   0   |  0  |     |  1  |             |
             # |   0   |   1   |  1  |     |  0  |             |
             # |   0   |   1   |  0  |  0  |     |             |
             # |   1   |   0   |  1  |     |     |  HW_FAULT   |
             # |   1   |   0   |  0  |     |     |  HW_FAULT   |
-            # |   1   |   1   |  1  |     |     |    IDLE     |
+            # |   1   |   1   |  1  |     |  0  |             |
             # |   1   |   1   |  0  |  0  |     |             |
 
             If(wt.done,
                 If(~pads.scl_i & pads.scl_o,
                     # Clock stretching by a device, let's wait it's over
                     wt.wait.eq(1),
-                ).Elif(~pads.sda_i & pads.scl_i,
+                ).Elif(~pads.sda_i & ~pads.sda_o & pads.scl_i,
                     NextValue(pads.sda_o, 1),
                     NextState("IDLE"),
-                ).Elif(pads.sda_i & ~pads.scl_i,
-                    NextValue(pads.sda_o, 0),
-                ).Elif(~pads.sda_i & ~pads.scl_i,
+                ).Elif(~pads.sda_i & ~pads.sda_o & ~pads.scl_i,
                     NextValue(pads.scl_o, 1),
-                ).Else(  # both at 1
+                ).Elif(~pads.sda_i & pads.sda_o & pads.scl_i,
                     NextValue(pads.scl_o, 0),
+                ).Elif(~pads.sda_i & pads.sda_o & ~pads.scl_i,
+                    NextValue(pads.sda_o, 0),
+                ).Elif(pads.sda_i & pads.sda_o & pads.scl_i,
+                    NextValue(pads.scl_o, 0),
+                ).Elif(pads.sda_i & pads.sda_o & ~pads.scl_i,
+                    NextValue(pads.sda_o, 0),
+                ).Else(  # undefined
+                    NextValue(pads.scl_o, ~pads.scl_o),
                 ),
             ).Else(
                 wt.wait.eq(1),
@@ -838,17 +872,6 @@ class I2cByteOperationTx(Module):
                 NextState("IDLE"),
             ),
         )
-        # fsm.act("RDATA",
-        #     sink.connect(gb.sink, keep=["ready", "valid", "data", "first", "last"]),
-        #     If(sink.valid & sink.ready,
-        #         If(sink.last,
-        #             NextState("IDLE"),
-        #         ).Else(
-        #             NextState("TXDATA"),
-        #         ),
-        #     ),
-        # )
-
         fsm.act("TXDATA",
             gb.source.connect(source),
             If(~gb.source.valid,
@@ -1018,7 +1041,8 @@ class I2cOperation(Module):
                 ).Else(
                     source.data.eq(0xFF),
                 ),
-                If(sink.last,
+                If(sink.valid & sink.ready & sink.last,
+                    # transmit a last once the data has been transmitted
                     NextState("STOP"),
                 ),
             ).Elif(sink.last,
@@ -1028,6 +1052,7 @@ class I2cOperation(Module):
         fsm.act("ADDRESS",
             source.data.eq(Cat(read, address[0:7])),
             source.valid.eq(1),
+            source.write.eq(1),
             If(source.ready,
                 NextState("DATA"),
             ),
