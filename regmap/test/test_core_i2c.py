@@ -5,6 +5,7 @@ from regmap.core.i2c import (
     I2CTimer, I2cBitOperation, I2cBitOperationRTx, I2cByteOperationRx, I2cByteOperation,
     I2cOperation, I2cByteOperationRTx
 )
+from regmap.test.utils import *
 
 
 class I2cDevice(Module):
@@ -291,12 +292,6 @@ class TestCoreCommon(unittest.TestCase):
         yield
         yield
 
-    @passive
-    def timeout(self, cycles):
-        for _ in range(cycles):
-            yield
-        raise Exception(f"timeout after {cycles} cycles")
-
     def push_byte(self, dut, b, write):
         yield (dut.sink.valid.eq(1))
         yield (dut.sink.data.eq(b))
@@ -349,7 +344,7 @@ class TestCoreBitOperation(TestCoreCommon):
                     self.push_bit(dut, bit),
                     self.wait_done(dut),
                     self.pop_bit(dut, bit & input_value),
-                    self.timeout(50),
+                    timeout(50),
                 ],
                 vcd_name=f"out/test_core_i2c_bit_{bit}_{input_value}.vcd")
 
@@ -414,7 +409,7 @@ class TestCoreBitOperation(TestCoreCommon):
 
         run_simulation(dut,
             [
-                self.timeout(50),
+                timeout(50),
                 stim(),
                 # self.wait_done(dut),
                 check(),
@@ -442,7 +437,7 @@ class TestCoreBitOperation(TestCoreCommon):
 
         run_simulation(dut,
             [
-                self.timeout(51),
+                timeout(51),
                 stim(),
                 # self.wait_done(dut),
                 check(),
@@ -465,7 +460,7 @@ class TestCoreByteOperationRx(TestCoreCommon):
 
         run_simulation(dut,
             [
-                self.timeout(50),
+                timeout(50),
                 stim(),
                 # self.wait_done(dut),
                 check(),
@@ -490,7 +485,7 @@ class TestCoreByteOperationRx(TestCoreCommon):
 
         run_simulation(dut,
             [
-                self.timeout(300),
+                timeout(300),
                 stim(),
                 # self.wait_done(dut),
                 check(),
@@ -515,7 +510,7 @@ class TestCoreByteOperation(TestCoreCommon):
 
         run_simulation(dut,
             [
-                self.timeout(50),
+                timeout(50),
                 stim(),
                 # self.wait_done(dut),
                 check(),
@@ -540,7 +535,7 @@ class TestCoreByteOperation(TestCoreCommon):
 
         run_simulation(dut,
             [
-                self.timeout(250),
+                timeout(250),
                 stim(),
                 # self.wait_done(dut),
                 check(),
@@ -565,7 +560,7 @@ class TestCoreByteOperation(TestCoreCommon):
 
         run_simulation(dut,
             [
-                self.timeout(250),
+                timeout(250),
                 stim(),
                 # self.wait_done(dut),
                 check(),
@@ -590,7 +585,7 @@ class TestI2cOperation(TestCoreCommon):
 
         run_simulation(dut,
             [
-                self.timeout(250),
+                timeout(250),
                 stim(),
                 # self.wait_done(dut),
                 check(),
@@ -613,7 +608,7 @@ class TestI2cOperation(TestCoreCommon):
 
         run_simulation(dut,
             [
-                self.timeout(250),
+                timeout(250),
                 stim(),
                 # self.wait_done(dut),
                 check(),
@@ -640,7 +635,7 @@ class TestI2cOperation(TestCoreCommon):
 
         run_simulation(dut,
             [
-                self.timeout(250),
+                timeout(250),
                 stim(),
                 # self.wait_done(dut),
                 check(),
@@ -664,7 +659,7 @@ class TestI2cOperation(TestCoreCommon):
 
         run_simulation(dut,
             [
-                self.timeout(500),
+                timeout(500),
                 stim(),
                 check(),
             ],
@@ -699,7 +694,7 @@ class TestI2cOperation(TestCoreCommon):
 
         run_simulation(top,
             [
-                self.timeout(650),
+                timeout(650),
                 stim(),
                 # self.wait_done(dut),
                 check(),
@@ -726,13 +721,7 @@ class TestI2cBit_OperationRTx(TestCoreCommon):
                 yield from self.push_bit(dut, 0)
                 yield from self.push_bit(dut, 1)
                 yield from self.push_stop(dut)
-                timeout = 30
-                while (yield dut.busy) == 1:
-                    timeout -= 1
-                    if timeout == 0:
-                        raise Exception("Still busy")
-                    yield
-                yield
+                yield from assert_eq_before(dut.busy, 0, 30)
 
         def check():
             for _ in range(2):
@@ -742,7 +731,7 @@ class TestI2cBit_OperationRTx(TestCoreCommon):
                 yield from self.pop_bit(dut, 1)
                 yield from self.pop_stop(dut)
 
-        run_simulation(dut, [stim(), check(), self.timeout(220)],
+        run_simulation(dut, [stim(), check(), timeout(220)],
             vcd_name="out/test_core_I2cOperationRTx_start_bit_stop.vcd")
 
     def test_arb_lost(self):
@@ -760,12 +749,8 @@ class TestI2cBit_OperationRTx(TestCoreCommon):
             yield dut.pad.sda_external_o.eq(0)  # force SDA to 0: the dut doesn't control the bus
 
             #  Wait for the arbitration lost condition to be detected
-            timeout = 20
-            while (yield dut.arb_lost) == 0:
-                timeout -= 1
-                if timeout == 0:
-                    raise Exception("Arbitration lost not detected")
-                yield
+            yield from assert_eq_before(dut.arb_lost, 1, 20)
+            yield
 
             self.assertEqual(1, (yield dut.pad.sda_o))  # the dut should release the bus
             self.assertEqual(1, (yield dut.pad.scl_o))  # the dut should release the bus
