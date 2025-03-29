@@ -13,3 +13,4 @@ vivado*
 *.log
 *.jou
 pyrightconfig.json
+analyzer.csv
