@@ -385,63 +385,68 @@ class I2cBitOperationRTx(Module):
 class I2cByteOperationRTx(Module):
     """Transform I2C Byte operations to Bit operations.
 
-    This module is meant to be interfaced with an I2cBitOperationRTx, and provides Byte-oriented
-    Slave and Master data/control streams.
+    This module interfaces with an `I2cBitOperationRTx` to provide Byte-oriented Slave and Master
+    data/control streams.
 
-    Inputs:
-    - sink_master: stream.Endpoint(i2c_byte_operation_layout) - defines which operation to perform:
-      - first=1 => perform a I2C Start condition
-      - last=1 => perform a I2C Stop condition
-      - is_ack => write an ACK. Only required after a transaction when write is set.
-      - ack => if `is_ack` is set, send this Ack value (cleared=Acknowledge).
-      - write => if cleared, writes 0xFF. source_master will provide an Ack.
-        if set, `source_master` does not provide an Ack, as it's produced by the master
-      - first=last=0 => perform a byte transmission
-      - data: Signal(8) - payload
-    - sink_slave: stream.Endpoint(i2c_byte_operation_layout) - Connect to `I2cBitOperationRTx.sink`.
-      - is_ack => write an ACK.
-      - data: Signal(8) - payload
-    - sink_bit: stream.Endpoint(i2c_bit_operation_layout) - Connect `I2cBitOperationRTx.source` to it.
-    - arb_lost_bit: Connect I2cBitOperationRTx.arb_lost to it.
-    - slave_enable: if set during slave operation, clock stretch is performed until
-      `sink_slave.valid` is set.
-    - busy_bit: Connect `I2cBitOperationRTx.busy` to it.
+    Master interface:
+    - Inputs:
+      - `master_sink`: `stream.Endpoint(i2c_byte_operation_layout)` - Master operation to perform
+        - `first`: perform a I2C Start condition if set
+        - `last`: perform a I2C Stop condition is set
+        - `is_ack`: write an ACK if set. Only required after a transaction when `write` is cleared.
+        - `ack`: if cleared, send ACK. If set, send NAK. Valid when `is_ack` is set
+        - `write`: if cleared, `master_source` will provide an ACK.
+          if set, `master_source` does not provide an Ack, as it's produced by the master
+        - `data`: Signal(8) - payload to transmit. Valid if `is_ack`=`first`=`last`=0 & `write`=1
+    - Outputs:
+      - `master_source`: `stream.Endpoint(i2c_byte_operation_layout)` - Master activity from the I2C bus
+        - `is_ack`: if set, only `ack` is valid.
+        - `ack`: if cleared, an ACK was received. If set, a NAK was received. Valid when `is_ack`=1
+        - `data`: Signal(8) - payload received. Valid if `is_ack`=`first`=`last`=0
 
+    Slave interface
+    - Inputs:
+      - slave_sink: stream.Endpoint(i2c_byte_operation_layout) - Connect to `I2cBitOperationRTx.sink`.
+        - `is_ack`: write an ACK.
+        - `data`: Signal(8) - payload
+      - slave_enable: if set during slave operation, clock stretch is performed until
+        `slave_sink.valid` is set.
+    - Outputs:
+      - slave_source: stream.Endpoint(i2c_byte_operation_layout) - Slave activity from the I2C bus
+        - `first`=1: I2C Start condition, `data` isn't valid
+        - `last`=1: I2C Stop condition, `data` isn't valid
+        - `is_ack`: if set, only `ack` is valid.
+        - `ack`: if `is_ack` is set, this is the Ack value (cleared=Acknowledge). `data` isn't valid.
+        - `data`: Signal(8) - payload. Only valid when `first` and `last` are cleared.
 
-    Outputs:
-    - source_master: stream.Endpoint(i2c_byte_operation_layout) - Master activity from the I2C bus
-      - is_ack => if set, only `ack` is valid.
-      - ack => if `is_ack` is set, this is the Ack value (cleared=Acknowledge).
-      - write => if cleared, writes 0xFF. source_master will provide an Ack.
-        if set, `source_master` does not provide an Ack, as it's produced by the master
-      - first=last=0 => perform a byte transmission
-      - data: Signal(8) - payload
-    - source_slave: stream.Endpoint(i2c_byte_operation_layout) - Slave activity from the I2C bus
-      - first=1 => I2C Start condition
-      - last=1 => I2C Stop condition
-      - is_ack => if set, only `ack` is valid.
-      - ack => if `is_ack` is set, this is the Ack value (cleared=Acknowledge).
-      - data: Signal(8) - payload. Only valid when `first` and `last` are cleared.
-    - source_bit: stream.Endpoint(i2c_bit_operation_layout) - Connect to `I2cBitOperationRTx.sink`.
+    Bit operation interface
+    - Inputs:
+      - bit_sink: stream.Endpoint(i2c_bit_operation_layout) - Connect `I2cBitOperationRTx.source` to it.
+      - arb_lost_bit: Connect I2cBitOperationRTx.arb_lost to it.
+      - busy_bit: Connect `I2cBitOperationRTx.busy` to it.
+    - Outputs:
+      - bit_source: stream.Endpoint(i2c_bit_operation_layout) - Connect to `I2cBitOperationRTx.sink`.
+      - clk_stretch: Signal() - Connect to I2cBitOperationRTx.clk_stretch
+
+    Common outputs:
     - arb_lost: If set, arbitration has been lost. Is also set in slave mode.
     - busy: reflects the state of the I2C bus. Set both in Slave or Master mode.
-    - clk_stretch: Signal() - Connect to I2cBitOperationRTx.clk_stretch
     """
     def __init__(self):
         # inputs
-        self.sink_master = sink_master = stream.Endpoint(i2c_byte_operation_layout)
-        self.sink_slave = sink_slave = stream.Endpoint(i2c_byte_operation_layout)
-        self.sink_bit = sink_bit = stream.Endpoint(i2c_bit_operation_layout)
+        self.master_sink = master_sink = stream.Endpoint(i2c_byte_operation_layout)
+        self.slave_sink = slave_sink = stream.Endpoint(i2c_byte_operation_layout)
         self.slave_enable = slave_enable = Signal()
+        self.bit_sink = bit_sink = stream.Endpoint(i2c_bit_operation_layout)
         self.arb_lost_bit = arb_lost_bit = Signal()
         self.busy_bit = busy_bit = Signal()
 
         # outputs
-        self.source_master = source_master = stream.Endpoint(i2c_byte_operation_layout)
-        self.source_slave = source_slave = stream.Endpoint(i2c_byte_operation_layout)
-        self.source_bit = source_bit = stream.Endpoint(i2c_bit_operation_layout)
-        self.arb_lost = arb_lost = Signal()
+        self.master_source = master_source = stream.Endpoint(i2c_byte_operation_layout)
+        self.slave_source = slave_source = stream.Endpoint(i2c_byte_operation_layout)
+        self.bit_source = bit_source = stream.Endpoint(i2c_bit_operation_layout)
         self.clk_stretch = clk_stretch = Signal()
+        self.arb_lost = arb_lost = Signal()
         self.busy = busy = Signal()
 
         # # #
@@ -455,61 +460,61 @@ class I2cByteOperationRTx(Module):
         ]
         self.submodules.fsm = fsm = FSM("IDLE")
         fsm.act("IDLE",
-            sink_bit.ready.eq(1),
-            If(sink_bit.valid & ~sink_bit.last,
+            bit_sink.ready.eq(1),
+            If(bit_sink.valid & ~bit_sink.last,
                 NextState("ARB_LOST"),
             ).Else(
-                sink_master.ready.eq(1),
-                If(sink_master.valid & sink_master.first,
+                master_sink.ready.eq(1),
+                If(master_sink.valid & master_sink.first,
                     NextValue(start, 1),
                     NextState("MASTER_SEND_START_STOP"),
                 ),
             ),
         )
         fsm.act("ARB_LOST",
-            If(sink_bit.valid,
-                If(sink_bit.last,
+            If(bit_sink.valid,
+                If(bit_sink.last,
                     NextState("IDLE"),
-                ).Elif(sink_bit.first,
+                ).Elif(bit_sink.first,
                     NextValue(bitcnt, 0),
                 ).Elif(bitcnt == 7,
-                    source_slave.valid.eq(1),
-                    source_slave.data.eq(Cat(sink_bit.data, data)),
+                    slave_source.valid.eq(1),
+                    slave_source.data.eq(Cat(bit_sink.data, data)),
                     NextValue(bitcnt, 0),
                     NextState("SLAVE_ACK"),
                 ).Else(
-                    NextValue(data, Cat(sink_bit.data, data)),
+                    NextValue(data, Cat(bit_sink.data, data)),
                     NextValue(bitcnt, bitcnt + 1),
                 )
             ),
         )
         fsm.act("SLAVE_ACK",
             If(slave_enable,
-                sink_slave.ready.eq(source_bit.ready),
-                source_bit.valid.eq(sink_slave.valid & sink_slave.is_ack),
-                source_bit.data.eq(sink_slave.ack),
-                source_slave.is_ack.eq(1),
-                source_slave.ack.eq(sink_bit.data),
-                source_slave.valid.eq(sink_bit.valid),
-                sink_bit.ready.eq(source_slave.ready),
+                slave_sink.ready.eq(bit_source.ready),
+                bit_source.valid.eq(slave_sink.valid & slave_sink.is_ack),
+                bit_source.data.eq(slave_sink.ack),
+                slave_source.is_ack.eq(1),
+                slave_source.ack.eq(bit_sink.data),
+                slave_source.valid.eq(bit_sink.valid),
+                bit_sink.ready.eq(slave_source.ready),
                 clk_stretch.eq(1),
 
-                If(sink_bit.valid,
+                If(bit_sink.valid,
                     NextState("ARB_LOST"),
                 ),
             ).Else(
-                sink_bit.ready.eq(1),
-                If(sink_bit.valid,
+                bit_sink.ready.eq(1),
+                If(bit_sink.valid,
                     NextState("ARB_LOST"),
                 ),
             )
         )
         fsm.act("MASTER_SEND_START_STOP",
-            source_bit.valid.eq(1),
-            source_bit.first.eq(start),
-            source_bit.last.eq(~start),
-            If(source_bit.valid & source_bit.ready,
-                If(source_bit.last,
+            bit_source.valid.eq(1),
+            bit_source.first.eq(start),
+            bit_source.last.eq(~start),
+            If(bit_source.valid & bit_source.ready,
+                If(bit_source.last,
                     NextState("IDLE"),
                 ).Else(
                     NextState("MASTER"),
@@ -517,39 +522,39 @@ class I2cByteOperationRTx(Module):
             ),
         )
         fsm.act("MASTER",
-            sink_master.connect(source_bit, keep=["first", "last", "ready"]),
-            sink_bit.ready.eq(1),
+            master_sink.connect(bit_source, keep=["first", "last", "ready"]),
+            bit_sink.ready.eq(1),
 
-            If(sink_master.valid & sink_master.ready,
-                If(sink_master.first,
+            If(master_sink.valid & master_sink.ready,
+                If(master_sink.first,
                     NextValue(start, 1),
                     NextState("MASTER_SEND_START_STOP"),
-                ).Elif(sink_master.last,
+                ).Elif(master_sink.last,
                     NextValue(start, 0),
                     NextState("MASTER_SEND_START_STOP"),
                 ).Else(
-                    NextValue(data_tx, sink_master.data),
+                    NextValue(data_tx, master_sink.data),
                     NextValue(bitcnt, 0),
-                    NextValue(is_write, sink_master.write),
+                    NextValue(is_write, master_sink.write),
                     NextState("MASTER_TRANSMIT"),
                 )
             ),
         )
         fsm.act("MASTER_TRANSMIT",
-            source_bit.data.eq(data_tx[7]),
-            source_bit.write.eq(is_write),
-            source_bit.valid.eq(1),
+            bit_source.data.eq(data_tx[7]),
+            bit_source.write.eq(is_write),
+            bit_source.valid.eq(1),
 
-            If(source_bit.valid & source_bit.ready,
+            If(bit_source.valid & bit_source.ready,
                 NextValue(data_tx[1:], data_tx),  # Shift left
                 NextState("MASTER_READ_BIT")
             ),
         )
         fsm.act("MASTER_READ_BIT",
-            sink_bit.ready.eq(1),
+            bit_sink.ready.eq(1),
 
-            If(sink_bit.valid & sink_bit.ready,
-                NextValue(data, Cat(sink_bit.data, data)),
+            If(bit_sink.valid & bit_sink.ready,
+                NextValue(data, Cat(bit_sink.data, data)),
                 NextValue(bitcnt, bitcnt + 1),
                 If(bitcnt == 7,
                     If(is_write,
@@ -566,37 +571,37 @@ class I2cByteOperationRTx(Module):
             ),
         )
         fsm.act("MASTER_READ_BYTE",
-            source_master.valid.eq(1),
-            source_master.data.eq(data),
-            If(source_master.valid & source_master.ready,
+            master_source.valid.eq(1),
+            master_source.data.eq(data),
+            If(master_source.valid & master_source.ready,
                 NextState("MASTER_ACK"),
             ),
         )
         fsm.act("MASTER_ACK",
             If(is_write,
-                source_bit.valid.eq(1),
-                source_bit.data.eq(1),
-            ).Elif(sink_master.is_ack,
-                source_bit.write.eq(1),
-                source_bit.data.eq(sink_master.ack),
-                source_bit.valid.eq(sink_master.valid),
-                sink_master.ready.eq(source_bit.ready),
+                bit_source.valid.eq(1),
+                bit_source.data.eq(1),
+            ).Elif(master_sink.is_ack,
+                bit_source.write.eq(1),
+                bit_source.data.eq(master_sink.ack),
+                bit_source.valid.eq(master_sink.valid),
+                master_sink.ready.eq(bit_source.ready),
             ),
-            If(source_bit.valid & source_bit.ready,
+            If(bit_source.valid & bit_source.ready,
                 NextState("MASTER_READ_ACK"),
             )
         )
         fsm.act("MASTER_READ_ACK",
-            source_master.is_ack.eq(1),
+            master_source.is_ack.eq(1),
             If(is_write,
-                source_master.ack.eq(sink_bit.data),
-                sink_bit.connect(source_master, keep=["valid", "ready"]),
+                master_source.ack.eq(bit_sink.data),
+                bit_sink.connect(master_source, keep=["valid", "ready"]),
             ).Else(  # on read, the ACK is produced by the master, no need to read it back
-                sink_bit.ready.eq(1),
+                bit_sink.ready.eq(1),
             ),
-            If(sink_bit.valid & sink_bit.ready,
+            If(bit_sink.valid & bit_sink.ready,
                 NextState("MASTER"),
-                If(is_write & sink_bit.data,
+                If(is_write & bit_sink.data,
                     NextValue(start, 0),
                     NextState("MASTER_SEND_START_STOP"),
                 ),
@@ -608,9 +613,9 @@ class I2cByteOperationRTx(Module):
         return [
             self.arb_lost_bit.eq(bit.arb_lost),
             self.busy.eq(bit.busy),
-            self.source_bit.connect(bit.sink),
+            self.bit_source.connect(bit.sink),
             bit.clk_stretch.eq(self.clk_stretch),
-            bit.source.connect(self.sink_bit),
+            bit.source.connect(self.bit_sink),
         ]
 
 
