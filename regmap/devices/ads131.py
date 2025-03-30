@@ -86,7 +86,7 @@ class ADS131Mxx(SpiDevice):
                     source.valid.eq(1),
                     Case(current_chan, {
                         i: [
-                            self.channels[i].eq(spi_sink.data),
+                            NextValue(self.channels[i], spi_sink.data),
                             source.channel.eq(i),
                         ] for i in range(self.channel_count)}),
                 ),
