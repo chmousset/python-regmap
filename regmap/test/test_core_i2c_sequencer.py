@@ -4,7 +4,7 @@ from migen.sim.core import run_simulation, passive
 from litex.soc.interconnect import stream
 from regmap.core.i2c_sequencer import I2cRegmap
 from regmap.core.models import I2cReg, I2cDevice
-from regmap.test.test_core_i2c import push, pop
+from regmap.test.utils import ep_push, ep_pop
 
 
 @passive
@@ -13,7 +13,7 @@ def rtx_model(sink, source, ack_write=True, echo_write=True):
     cnt = 0x42
     while True:
         yield
-        yield from pop(source)
+        yield from ep_pop(source)
         if (yield source.first):
             print("pop Start")
             continue
@@ -26,20 +26,20 @@ def rtx_model(sink, source, ack_write=True, echo_write=True):
             if is_write:
                 ack = 0 if ack_write else 1
                 print(f"push Ack={ack}")
-                yield from push(sink, {"is_ack": 1, "ack": ack})
+                yield from ep_push(sink, {"is_ack": 1, "ack": ack})
                 continue
         if (yield source.write):
             data = yield source.data
             print(f"pop Write={data}")
             is_write = True
             if echo_write:
-                yield from push(sink, {"data": (yield source.data)})
+                yield from ep_push(sink, {"data": (yield source.data)})
             else:
-                yield from push(sink, {"data": ~(yield source.data)})
+                yield from ep_push(sink, {"data": ~(yield source.data)})
         else:
             is_write = False
             print(f"pop Read")
-            yield from push(sink, {"data": cnt})
+            yield from ep_push(sink, {"data": cnt})
             cnt += 1
 
 
