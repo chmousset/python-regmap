@@ -35,6 +35,18 @@ def spi_check_cs_cpol(pads, cs_pad, cpol):
         yield
 
 
+def spi_wait_cs_toggle(cs_pad, timeout=100):
+    while (yield cs_pad) == 1:
+        assert timeout > 0
+        timeout -= 1
+        yield
+    while (yield cs_pad) == 0:
+        assert timeout > 0
+        timeout -= 1
+        yield
+    yield
+    yield
+
 @passive
 def spi_check_data_stable_cpol_cpha(pads, cs, cpol, cpha):
     old_sclk = (yield pads.sclk)
@@ -187,72 +199,30 @@ class TestSpiClkSync(unittest.TestCase):
                     ], vcd_name=f"out/test_core_spi_clk_sync_{cpol}_{cpha}.vcd")
 
 
-class TestSpiBit(unittest.TestCase):
-    def test_bit(self):
-        def push_bit(dut, bit):
-            yield dut.sink.data.eq(bit)
-            yield dut.sink.valid.eq(1)
-            while True:
-                yield
-                if (yield dut.sink.ready):
-                    break
-
-        def push_bits(dut, bits):
-            for bit in bits:
-                yield from push_bit(dut, bit)
-            yield
-
-        class Dut(Module):
-            def __init__(self, pads, cpol, cpha):
-                self.submodules.csyn = SpiClkSync(12E6, 4E6, cpol, cpha)
-                self.submodules.bit = SpiBit(pads)
-                self.comb += [
-                    self.bit.csyn.eq(self.csyn.csyn),
-                    pads.sclk.eq(self.csyn.sclk),
-                ]
-                self.sink, self.source = self.bit.sink, self.bit.source
-
-        pads = Record([
-            ("sclk", 1),
-            ("miso", 1),
-            ("mosi", 1),
-            ])
-        for cpol in [0, 1]:
-            for cpha in [0, 1]:
-                print(f"cpol={cpol} cpha={cpha}")
-                dut = Dut(pads, cpol, cpha)
-
-                bits = [1, 0, 1, 0]
-                run_simulation(dut, [
-                        spi_mosi_check(pads, bits, cpol=cpol, cpha=cpha),
-                        push_bits(dut, bits),
-                        wait_min_sclk(),
-                    ], vcd_name=f"out/test_core_spi_bit_{cpol}_{cpha}.vcd")
-
-
 class TestSpiMaster(unittest.TestCase):
-    def send_word(self, dut, width, word, cpol=0, cpha=0):
+    def send_word(self, dut, width, word, cpol=0, cpha=0, last=0):
         yield dut.sink.valid.eq(1)
         yield dut.sink.data.eq(word)
         yield dut.sink.width.eq(width)
         yield dut.sink.cpol.eq(cpol)
         yield dut.sink.cpha.eq(cpha)
+        yield dut.sink.last.eq(last)
+        yield
         while (yield dut.sink.ready) == 0:
             yield
-        yield
         yield dut.sink.valid.eq(0)
 
     def send_words(self, dut, width, words, cpol=0, cpha=0):
         yield
-        for word in words:
-            yield from self.send_word(dut, width, word, cpol, cpha)
+        for (i, word) in enumerate(words):
+            yield from self.send_word(dut, width, word, cpol, cpha, last=1 if i==len(words)-1 else 0)
 
     def pop_word(self, dut, expected_word):
         yield dut.source.ready.eq(1)
+        yield
         while (yield dut.source.valid) == 0:
             yield
         self.assertEqual((yield dut.source.data), expected_word)
-        yield
         yield dut.source.ready.eq(0)
 
     def pop_words(self, dut, expected_words):
@@ -264,15 +234,21 @@ class TestSpiMaster(unittest.TestCase):
             ("sclk", 1),
             ("miso", 1),
             ("mosi", 1),
+            ("cs", 1),
             ])
         dut = SpiMaster(
             sys_fcy=4E6, min_fcy=1E6, pads=pads, dw=16, sclk_output_idle=False)
+        dut.comb += pads.cs.eq(~dut.busy)
 
         word = 0xde
         width = 8
         bits = [(word >> i) & 0b1 for i in range(width, -1)]
         read_word = (~word) & ((1<<width) - 1)
+        def stim():
+            for _ in range(100):
+                yield
         run_simulation(dut, [
+                # stim(),
                 spi_mosi_check(pads, bits, ~dut.busy),
                 spi_loopback(pads),
                 self.send_words(dut, width-1, [word]),
@@ -284,14 +260,14 @@ class TestSpiMaster(unittest.TestCase):
             ("sclk", 1),
             ("miso", 1),
             ("mosi", 1),
+            ("cs", 1),
             ])
 
         for cpol in [0, 1]:
             for cpha in [0, 1]:
                 dut = SpiMaster(
                     sys_fcy=4E6, min_fcy=1E6, pads=pads, dw=16, sclk_output_idle=False)
-                cs = Signal()
-                dut.comb += cs.eq(~dut.busy)
+                dut.comb += pads.cs.eq(~dut.busy)
                 words = [0xde, 0xad, 0xbe, 0xef]
                 width = 8
                 bits = [(word >> i) & 0b1 for i in range(width, -1)]
@@ -302,8 +278,9 @@ class TestSpiMaster(unittest.TestCase):
                         spi_loopback(pads),
                         self.send_words(dut, width-1, words, cpol, cpha),
                         self.pop_words(dut, read_words),
-                        spi_check_cs_cpol(pads, cs, cpol),
-                        # spi_check_data_stable_cpol_cpha(pads, cs, cpol, cpha),
+                        spi_check_cs_cpol(pads, pads.cs, cpol),
+                        spi_wait_cs_toggle(pads.cs, 300),
+                        # spi_check_data_stable_cpol_cpha(pads, pads.cs, cpol, cpha),
                     ], vcd_name=f"out/test_core_spi_master_multiple_{cpol}_{cpha}.vcd")
 
 

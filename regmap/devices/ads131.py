@@ -67,7 +67,6 @@ class ADS131Mxx(SpiDevice):
         fsm.act("READ_STATUS",
             spi_source.valid.eq(1),
             If(spi_sink.valid,
-                # NextValue(chan_valid, 0xF),
                 If(spi_sink.data & (0xFF << 8),
                 # If(1,
                     NextState("READ_DATA"),

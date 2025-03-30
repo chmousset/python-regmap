@@ -33,12 +33,86 @@ _ios = [
         Subsignal("sclk", Pins("PMOD1A:1")),
         Subsignal("mosi", Pins("PMOD1A:2")),
         Subsignal("miso", Pins("PMOD1A:3")),
-        Subsignal("miso_cpy", Pins("PMOD1A:7")),
+    ),
+    ("spi", 1,
+        Subsignal("cs", Pins("PMOD1A:0")),
+        Subsignal("sclk", Pins("PMOD1A:4")),
+        Subsignal("mosi", Pins("PMOD1A:1")),
+        Subsignal("miso", Pins("PMOD1A:5")),
     ),
     ("onewire", 0,
         Subsignal("io", Pins("GPIO1:0")),
     ),
 ]
+
+
+class SpiDemo(LiteXModule, AutoCSR):
+    def __init__(self, platform, sys_clk_freq):
+        from regmap.core.spi import SpiMaster
+        from regmap.devices.ads131 import ADS131M04
+        from regmap.devices.ads1120 import ADS1120, ADS1120Config
+
+        # CSRs
+        self.cr = CSRStorage("cr", fields=[
+            CSRField("en_ads131", 1, offset=0),
+            CSRField("en_ads1120", 1, offset=1),
+            CSRField("clk", 1, offset=2, description="enable continuous clock"),
+        ])
+        self.config = CSRStorage(32, name="config")
+        self.sr = CSRStatus("sr", fields=[
+            CSRField("busy", 1, offset=0),
+        ])
+        self.chan_0 = CSRStatus(24, name=f"chan_0")
+        self.chan_1 = CSRStatus(24, name=f"chan_1")
+        self.chan_2 = CSRStatus(24, name=f"chan_2")
+        self.chan_3 = CSRStatus(24, name=f"chan_3")
+
+        # SPI Master
+        pads = platform.request("spi", 0)
+        self.submodules.spi_master = master = SpiMaster(sys_clk_freq, 4E6, pads, 24, sclk_output_idle=self.cr.fields.clk)
+        self.comb += [
+            self.sr.fields.busy.eq(self.spi_master.busy),
+        ]
+
+        # SPI slave: ADS131
+        self.submodules.ads131 = ADS131M04(config=(4, [
+                0x7777,  # reg=0x04; Gain=128 for all channels
+                0x0000,  # reg=0x05; reserved
+                (0b0011 << 9) | (0b1 << 8),  # reg=0x06; chop mode enable, delay=16
+            ]))
+        self.comb += [
+            If(self.cr.fields.en_ads131,
+                self.spi_master.source.connect(self.ads131.spi_sink),
+                self.ads131.spi_source.connect(self.spi_master.sink),
+            ),
+        ]
+        for (i, chan) in enumerate(self.ads131.channels):
+            self.comb += [
+                getattr(self, f"chan_{i}").status.eq(chan)
+            ]
+
+        # SPI Slave: ADS1120
+        self.submodules.ads1120 = ADS1120()
+        self.comb += [
+            If(self.cr.fields.en_ads1120,
+                self.spi_master.source.connect(self.ads1120.spi_sink),
+                self.ads1120.spi_source.connect(self.spi_master.sink),
+            ),
+            self.ads1120.config.eq(self.config.storage),
+            self.ads1120.drdy_n.eq(pads.miso),
+        ]
+        simple_config = ADS1120Config(mux_drdy=True).to_w32()
+        print(f"ADS1120 config: {simple_config:08X}")
+        # exit(0)
+
+        # Analyzer
+        self.analyzer_signals = [
+            self.spi_master.sink,
+            self.spi_master.source,
+            self.cr.fields.en_ads131,
+            self.cr.fields.en_ads1120,
+            pads,
+        ]
 
 
 class I2cDemo(LiteXModule, AutoCSR):
@@ -171,6 +245,7 @@ class BaseSoC(SoCCore):
         with_led_chaser     = True,
         with_i2c            = False,
         with_i2c_regmap     = False,
+        with_spi            = False,
         **kwargs):
         platform = icebreaker.Platform()
         platform.add_extension(icebreaker.break_off_pmod)
@@ -188,17 +263,22 @@ class BaseSoC(SoCCore):
 
         self.add_uartbone()
 
-        # I2C
-        if with_i2c:
-            self.submodules.i2c = I2cDemo(platform, sys_clk_freq)
-        if with_i2c_regmap:
-            self.submodules.i2c = I2cRegmapDemo(platform, sys_clk_freq)
+        # Demos ------------------------------------------------------------------------------------
+        if with_i2c | with_i2c_regmap | with_spi:
+            assert(with_i2c ^ with_i2c_regmap ^ with_spi, "you must only enable a single demo at a time")
 
-        analyzer_signals = [ ] + self.i2c.analyzer_signals
+        if with_i2c:
+            self.submodules.demo = I2cDemo(platform, sys_clk_freq)
+        if with_i2c_regmap:
+            self.submodules.demo = I2cRegmapDemo(platform, sys_clk_freq)
+        if with_spi:
+            self.submodules.demo = SpiDemo(platform, sys_clk_freq)
+
+        analyzer_signals = [ ] + self.demo.analyzer_signals
 
         if len(analyzer_signals):
             self.submodules.analyzer = LiteScopeAnalyzer(analyzer_signals,
-                depth        = 4096,
+                depth        = 1024,
                 clock_domain = "sys",
                 samplerate   = sys_clk_freq,
                 csr_csv      = "analyzer.csv")
@@ -224,6 +304,7 @@ def main():
     parser.add_target_argument("--sys-clk-freq",        default=24e6, type=float, help="System clock frequency.")
     parser.add_target_argument("--i2c",                 action="store_true",      help="Enable the I2C demo")
     parser.add_target_argument("--i2c-regmap",          action="store_true",      help="Enable the I2C Regmap demo")
+    parser.add_target_argument("--spi",                 action="store_true",      help="Enable the SPI demo")
     args = parser.parse_args()
 
     if args.load:
@@ -233,6 +314,7 @@ def main():
         sys_clk_freq        = args.sys_clk_freq,
         with_i2c            = args.i2c,
         with_i2c_regmap     = args.i2c_regmap,
+        with_spi            = args.spi,
         **parser.soc_argdict
     )
     builder = Builder(soc, **parser.builder_argdict)

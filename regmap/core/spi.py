@@ -8,15 +8,13 @@ from litex.gen.genlib.misc import WaitTimer
 spi_bit_csyn_layout = [
     ("update", 1),
     ("sample", 1),
+    ("set_cs", 1),
+    ("clear_cs", 1),
 ]
 
 spi_bit_ctrl_layout = [
     ("cpol", 1),
     ("cpha", 1),
-]
-
-spi_bit_layout = [
-    ("data", 1),
 ]
 
 def spi_ctrl_layout(dw):
@@ -32,134 +30,6 @@ def spi_layout(dw):
     ]
 
 
-class SpiBit(Module):
-    def __init__(self, pads, miso_ff=False):
-        # inputs
-        self.sink = sink = stream.Endpoint(spi_bit_layout)
-        self.csyn = csyn = Record(spi_bit_csyn_layout)
-
-        # outputs
-        self.source = source = stream.Endpoint(spi_bit_layout)
-
-        # # #
-        self.comb += sink.ready.eq(csyn.update)
-        self.sync += [
-            If(sink.valid & sink.ready,
-                pads.mosi.eq(sink.data),
-                source.first.eq(sink.first),  # first tag will be transfered back on source
-            ),
-        ]
-        if miso_ff:
-            self.sync += [
-                If(csyn.sample,
-                    source.data.eq(pads.miso),
-                    source.valid.eq(1),
-                ).Elif(source.ready & source.valid,
-                    source.valid.eq(0),
-                    source.first.eq(0),
-                ),
-            ]
-        else:
-            self.comb += [
-                source.data.eq(pads.miso),
-                If(csyn.sample,
-                    source.valid.eq(1),
-                ),
-            ]
-
-
-class WordToBitGearbox(Module):
-    """serialise sink.data into source.data
-
-    The data width is configurable at each transaction.
-    Data is always left-aligned, big endian, which means that source.data[0] is always the LSB,
-    whatever sink.width.
-    """
-    def __init__(self, dw):
-        # inputs
-        self.sink = sink = stream.Endpoint(spi_layout(dw))
-        self.ctrl = ctrl = Record(spi_ctrl_layout(dw))
-
-        # outputs
-        self.source = source = stream.Endpoint(spi_bit_layout)
-
-        # # #
-        self.submodules.fsm = fsm = FSM("IDLE")
-        bits = Signal(max=dw)
-        bit_sel = Signal(max=dw)
-        data_sel = Signal(dw)
-        data = Signal(dw - 1)
-        self.comb += Case(bit_sel, {i: source.data.eq(data_sel[i]) for i in range(dw)})
-        fsm.act("IDLE",
-            data_sel.eq(sink.data),
-            sink.connect(source, omit=["data", "first"]),
-            bit_sel.eq(ctrl.width),
-            source.first.eq(1),
-            If(sink.valid & sink.ready,
-                NextValue(data, sink.data),
-                NextValue(bits, ctrl.width - 1),
-                NextState("SERIALIZE"),
-            ),
-        )
-        fsm.act("SERIALIZE",
-            data_sel.eq(data),
-            source.valid.eq(1),
-            bit_sel.eq(bits),
-            If(source.ready,
-                If(bits,
-                    NextValue(bits, bits - 1),
-                ).Else(
-                    NextState("IDLE"),
-                ),
-            ),
-        )
-
-
-class BitToWordGearbox(Module):
-    """deserialise sink.data into source.data
-
-    parameters:
-      - dw: maximum data width
-
-    Inputs:
-      - sink: stream of incoming bits. sink.first signals MSB
-      - ctrl: only width is used
-    """
-    def __init__(self, dw):
-        # inputs
-        self.sink = sink = stream.Endpoint(spi_bit_layout)
-        self.ctrl = ctrl = Record(spi_ctrl_layout(dw))
-
-        # outputs
-        self.source = source = stream.Endpoint(spi_layout(dw))
-
-        # # #
-        bits = Signal(max=dw)
-        self.comb += [
-            sink.ready.eq(1),
-        ]
-
-        self.sync += [
-            If(source.ready & source.valid,
-                source.valid.eq(0),
-            ),
-            If(sink.valid,
-                source.data.eq(Cat(sink.data, source.data)),
-                If(sink.first,
-                    bits.eq(1),
-                    source.data.eq(sink.data),
-                ).Else(
-                    If(bits == ctrl.width,
-                        bits.eq(0),
-                        source.valid.eq(1),
-                    ).Else(
-                        bits.eq(bits + 1)
-                    ),
-                ),
-            ),
-        ]
-
-
 class SpiClkSync(Module):
     def __init__(self, sys_fcy, min_fcy, cpol, cpha):
         self.csyn = csyn = Record(spi_bit_csyn_layout)
@@ -170,9 +40,22 @@ class SpiClkSync(Module):
         sclk_edge = wt.done
         self.comb += wt.wait.eq(~wt.done)
         self.sync += If(wt.done, sclk.eq(~sclk))
+        set_cs = Signal()
+        clear_cs = Signal()
         self.comb += [
             csyn.update.eq(sclk_edge & (sclk ^ cpol ^ cpha)),
             csyn.sample.eq(sclk_edge & ~(sclk ^ cpol ^ cpha)),
+            If(cpha,
+                set_cs.eq(csyn.sample),
+                clear_cs.eq(csyn.sample),
+            ).Else(
+                set_cs.eq(csyn.update),
+                clear_cs.eq(csyn.update),
+            ),
+        ]
+        self.sync += [
+            csyn.set_cs.eq(set_cs),
+            csyn.clear_cs.eq(clear_cs),
         ]
 
 
@@ -181,14 +64,27 @@ class SpiMaster(Module):
 
     Full duplex SPI Master. Takes mosi commands on sink and outputs miso readback on source.
 
+    parameters:
+    - `sclk_output_idle`: if True, the master generates a continuous clock on sclk, but also returns
+      to "IDLE" state if `sink.valid == 0` when `sink.ready == 1`.
+
     inputs:
-    - sink
+    - `sink`: Control stream
+      - `data[dw]`: the payload. `data[width]` is the first bit transmitted on MOSI
+      - `width[log2n(dw)]`: the lenght of the transfer, minus 1 (ex: 15 => 16 bits transmitted)
+      - `last`: if set, the master returns in "IDLE" after transmissing the payload
+      - `cpol`: clock polarity
+      - `cpha`: clock edge
+      - `first`: passed to `source`, optional 
 
     outputs:
-    - source:
+    - `source`:
+      - `data`: the payload. `data[width]` is the first bit received on MISO
+      - `first`: the value of `sink.first` transmitted
+      - `last`: the value of `sink.last` transmitted
     - busy: 1 when the serialiser/deser are working. Can be used to drive the Chip Select lines
     """
-    def __init__(self, sys_fcy, min_fcy, pads, dw, sclk_output_idle=False):
+    def __init__(self, sys_fcy, min_fcy, pads, dw, sclk_output_idle=0):
         # inputs
         self.sink = sink = stream.Endpoint(spi_layout(dw) + spi_ctrl_layout(dw))
 
@@ -197,79 +93,97 @@ class SpiMaster(Module):
         self.busy = busy = Signal()
 
         # # #
-        ctrl = Record(spi_ctrl_layout(dw))
-        # clock generation
-        self.submodules.csyn = csyn = SpiClkSync(sys_fcy, min_fcy, ctrl.cpol, ctrl.cpha)
+        cpol = Signal()
+        cpha = Signal()
+        start_with_cpha = Signal()
+        self.submodules.csyn = csyn = SpiClkSync(sys_fcy, min_fcy, cpol, cpha)
         self.comb += [
-            pads.sclk.eq(csyn.sclk if sclk_output_idle else csyn.sclk & busy),
+            If(sclk_output_idle,
+                pads.sclk.eq(csyn.sclk),
+            ).Else(
+                pads.sclk.eq((csyn.sclk & busy) | cpol),
+            ),
         ]
         csyn = csyn.csyn
+        if hasattr(pads, "cs"):
+            self.sync += pads.cs.eq(~busy)
 
-        self.submodules.bit = bit = SpiBit(pads)
-        self.submodules.w2b = w2b = WordToBitGearbox(dw)
-        self.submodules.b2w = b2w = BitToWordGearbox(dw)
+        # bufferred inputs
+        tx = Signal(dw)
+        first = Signal()
+        last = Signal()
+
+        # bit transmit / receive
+        rx = Signal(dw)
+        bit_sel = Signal().like(sink.width)
         self.comb += [
-            w2b.source.connect(bit.sink),
-            bit.source.connect(b2w.sink),
-            w2b.ctrl.eq(ctrl),
-            b2w.ctrl.eq(ctrl),
-            bit.csyn.eq(csyn),
+            Case(bit_sel, {
+                i: pads.mosi.eq(tx[i]) for i in range(dw)
+            }),
+            source.data.eq(rx),
+            source.first.eq(first),
+            source.last.eq(last),
         ]
 
-        self.submodules.fsm = fsm = FSM("IDLE")
-        fsm.act("IDLE",
-            If(sink.valid,
-                If((ctrl.cpol == sink.cpol) & (ctrl.cpha == sink.cpha) & (ctrl.width == sink.width),
-                    # setup did not change, we can transmit
-                    If(~ctrl.cpha,
-                        # MOSI is setup at the same time as CS
-                        sink.connect(w2b.sink, keep=["data", "valid", "ready"]),
-                        If(w2b.sink.ready,
-                            b2w.source.ready.eq(1),  # empty receive buffer if any
-                            NextState("RECEIVE"),
-                            # busy.eq(1),
-                        ),
-                    ).Elif(csyn.sample & sink.valid,
-                        # MOSI is setup after CS, it corresponds to sample time
-                        NextState("TRANSMIT"),
-                        # busy.eq(1),
+        self.submodules.fsm = fsm = FSM("FETCH")
+        fsm.act("FETCH",
+            sink.ready.eq(~busy | csyn.update),
+            If(sink.valid & sink.ready,
+                NextValue(tx, sink.data),
+                NextValue(first, sink.first),
+                NextValue(last, sink.last),
+                NextValue(cpol, sink.cpol),
+                NextValue(cpha, sink.cpha),
+                NextValue(bit_sel, sink.width),
+                NextValue(start_with_cpha, sink.cpha & ~busy),
+                If(busy,
+                    NextState("TRANSFER"),
+                ).Else(
+                    NextState("SET_CS"),
+                ),
+            ),
+            If(source.ready,
+                NextValue(source.valid, 0),
+            ),
+        )
+        fsm.act("SET_CS",
+            If(csyn.set_cs,
+                NextState("TRANSFER"),
+                NextValue(busy, 1),
+            ),
+        )
+        fsm.act("TRANSFER",
+            If(csyn.sample,
+                Case(bit_sel, {
+                    i: NextValue(rx[i], pads.miso) for i in range(dw)  # it's OK since MISO should be sync with SCLK
+                }),
+                If(bit_sel == 0,
+                    NextValue(source.valid, 1),
+                    If(last,
+                        NextState("CLEAR_CS"),
+                    ).Else(
+                        NextState("FETCH"),
                     ),
                 ).Else(
-                    NextValue(ctrl.cpol, sink.cpol),
-                    NextValue(ctrl.cpha, sink.cpha),
-                    NextValue(ctrl.width, sink.width),
+                    NextValue(source.valid, 0),
                 ),
             ),
-        )
-        fsm.act("TRANSMIT",
-            busy.eq(1),
-            sink.connect(w2b.sink, keep=["first", "data", "ready", "valid"]),
-            b2w.source.ready.eq(1),  # empty receive buffer if any
-            If(sink.ready,
-                If(sink.valid,
-                    NextState("RECEIVE"),
+            If(csyn.update,
+                If(start_with_cpha,
+                    NextValue(start_with_cpha, 0),
                 ).Else(
-                    # we should never reach here
-                    NextState("IDLE"),
+                    NextValue(bit_sel, bit_sel - 1),
                 ),
             ),
         )
-        fsm.act("RECEIVE",
-            busy.eq(1),
-            b2w.source.connect(source),
-            If(source.valid,
-                If(sink.valid,
-                    NextState("TRANSMIT"),
-                ).Else(
-                    NextState("FINISH"),
-                ),
+        fsm.act("CLEAR_CS",
+            If(source.ready,
+                NextValue(source.valid, 0),
             ),
-        )
-        fsm.act("FINISH",
-            busy.eq(1),
-            If((ctrl.cpha & csyn.update) | (~ctrl.cpha & csyn.sample),
-                NextState("IDLE"),
-            ),
+            If(csyn.clear_cs,
+                NextValue(busy, 0),
+                NextState("FETCH"),
+            )
         )
 
 
