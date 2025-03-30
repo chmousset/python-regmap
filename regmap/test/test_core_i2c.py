@@ -55,32 +55,25 @@ class I2cDevice(Module):
 
     def wait_bit(self):
         while True:
+            yield
             if self.scl_rising:
                 self.bit = (yield self.sda_i)
-                break
-            if self.is_stop:
-                break
-            yield
+                return
+            if self.is_stop or self.is_start:
+                return
 
     def wait_byte(self, ack_address=None, ack=None):
         self.byte = 0
         for _ in range(8):
-            if self.is_stop:
-                yield
-                return
             yield from self.wait_bit()
+            if self.is_stop or self.is_start:
+                return
             yield
             self.byte = (self.byte << 1) + self.bit
-        if self.is_stop:
-            yield
-            return
         if ack is not None:
             yield from self.send_ack(ack)
-            yield
         elif ack_address is not None:
             yield from self.send_ack((self.byte & 0xFE) == ack_address)
-            yield
-
 
     def send_ack(self, ack=True):
         yield from self.send_bit(0 if ack else 1)
@@ -89,16 +82,18 @@ class I2cDevice(Module):
 
     def send_bit(self, bit):  # transmit a bit
         while not self.scl_falling:
-            if self.is_stop:
+            if self.is_stop or self.is_start:
                 return self.sda_o.eq(1)
             yield
         yield self.sda_o.eq(bit)
 
-    def send_byte(sef, byte):
+    def send_byte(self, byte):
         for bit in range(7, -1, -1):
-            yield from self.bit(1 if byte & (1<<bit) else 0)
+            value = 1 if byte & (1<<bit) else 0
+            yield from self.send_bit(value)
             if self.is_stop:
                 break
+            yield from self.wait_bit()
 
 
 class I2cMem(I2cDevice):
@@ -113,17 +108,18 @@ class I2cMem(I2cDevice):
     def sim(self):
         yield # update last
         while True:
-            yield from self.wait_idle()
             yield from self.wait_start()
+            yield
             yield from self.wait_byte(ack_address=self.address)
-            if self.is_stop:
+            if self.is_stop or self.is_start:
                 continue
             if self.byte & 0xfe == self.address:
-                if self.byte & 0b1 == 1:  # read operation
+                if self.byte & 0x01:  # read operation
                     while True:
-                        yield from self.send_byte(self.mem.get(self.mem_address, 0))
+                        data = self.mem.get(self.mem_address, 0)
+                        yield from self.send_byte(data)
                         self.mem_address = (self.mem_address + 1) % (256**self.address_bytes)
-                        if self.is_stop:
+                        if self.is_stop or self.is_start:
                             break
                         yield from self.wait_bit()  # ACK
                         if self.bit:  # NACK: now we're passive
@@ -134,10 +130,14 @@ class I2cMem(I2cDevice):
                     self.mem_address = 0
                     for _ in range(self.address_bytes):
                         yield from self.wait_byte(ack=True)
+                        if self.is_stop or self.is_start:
+                            break
                         self.mem_address = self.mem_address << 8 | self.byte
 
                     while True:
                         yield from self.wait_byte(ack=self.mem_address in self.mem.keys())
+                        if self.is_stop or self.is_start:
+                            break
                         if self.mem_address not in self.mem.keys():
                             yield self.sda_o.eq(1)  # go passive
                             yield from self.wait_stop()
@@ -900,49 +900,6 @@ class TestI2cBit_OperationRTx(TestCoreCommon):
             vcd_name="out/test_core_I2cOperationRTx_slave.vcd")
 
 
-def push(ep, data, zero=True, timeout=None):
-    if zero:
-        for sig, _ in ep.iter_flat():
-            if sig == ep.ready:
-                continue
-            yield sig.eq(0)
-
-    for k, v in data.items():
-        yield getattr(ep, k).eq(v)
-
-    if timeout is None:
-        timeout = -1
-
-    yield ep.valid.eq(1)
-    yield
-    while (yield ep.ready) == 0:
-        if timeout == 0:
-            raise Exception("Timeout")
-        if timeout is not None:
-            timeout -= 1
-        yield
-    yield ep.valid.eq(0)
-
-
-def pop(ep, expected_data={}, timeout=None):
-    if timeout is None:
-        timeout = -1
-
-    yield ep.ready.eq(1)
-    yield
-    while (yield ep.valid) == 0:
-        if timeout == 0:
-            raise Exception("Timeout")
-        if timeout is not None:
-            timeout -= 1
-        yield
-    for k, v in expected_data.items():
-        val = (yield getattr(ep, k))
-        if (val != v):
-            raise ValueError("Expected {k}={v} but readback value = {val}")
-    yield ep.ready.eq(0)
-
-
 class TestI2cByteOperationRTx(TestCoreCommon):
     def test_master_w_r(self):
         dut = I2cByteOperationRTx()
@@ -950,44 +907,44 @@ class TestI2cByteOperationRTx(TestCoreCommon):
         def stim():
             for _ in range(2):
                 # Start
-                yield from push(dut.master_sink, {"first": 1}, timeout=20)
+                yield from ep_push(dut.master_sink, {"first": 1}, timeout=20)
 
                 # write one byte
-                yield from push(dut.master_sink, {"write": 1, "data": 0x42}, timeout=20)
-                yield from pop(dut.master_source, {"is_ack": 1, "ack": 0}, timeout=20)
+                yield from ep_push(dut.master_sink, {"write": 1, "data": 0x42}, timeout=20)
+                yield from ep_pop(dut.master_source, {"is_ack": 1, "ack": 0}, timeout=20)
 
                 # read one byte
-                yield from push(dut.master_sink, {}, timeout=20)
-                yield from pop(dut.master_source, {"data": 0xDE}, timeout=40)
-                yield from push(dut.master_sink, {"is_ack": 1}, timeout=20)
+                yield from ep_push(dut.master_sink, {}, timeout=20)
+                yield from ep_pop(dut.master_source, {"data": 0xDE}, timeout=40)
+                yield from ep_push(dut.master_sink, {"is_ack": 1}, timeout=20)
 
                 # Stop
-                yield from push(dut.master_sink, {"last": 1}, timeout=40)
+                yield from ep_push(dut.master_sink, {"last": 1}, timeout=40)
 
         def check():
             for _ in range(2):
                 # yield
-                yield from pop(dut.bit_source, {"first": 1}, timeout=20)
-                yield from push(dut.bit_sink, {"first": 1}, timeout=20)
+                yield from ep_pop(dut.bit_source, {"first": 1}, timeout=20)
+                yield from ep_push(dut.bit_sink, {"first": 1}, timeout=20)
                 yield
 
                 for i in range(8):
                     bit = 0b1 & (0x42 >> (7 - i))
-                    yield from pop(dut.bit_source, {"data": bit}, timeout=20)
-                    yield from push(dut.bit_sink, {"data": bit}, timeout=20)
-                yield from pop(dut.bit_source, {"data": 1}, timeout=20)
-                yield from push(dut.bit_sink, {"data": 0}, timeout=20)
+                    yield from ep_pop(dut.bit_source, {"data": bit}, timeout=20)
+                    yield from ep_push(dut.bit_sink, {"data": bit}, timeout=20)
+                yield from ep_pop(dut.bit_source, {"data": 1}, timeout=20)
+                yield from ep_push(dut.bit_sink, {"data": 0}, timeout=20)
 
                 for i in range(8):
                     bit = 0b1 & (0xDE >> (7 - i))
-                    yield from pop(dut.bit_source, {"write": 0}, timeout=20)
-                    yield from push(dut.bit_sink, {"data": bit}, timeout=20)
-                yield from pop(dut.bit_source, timeout=20)
-                yield from push(dut.bit_sink, {"data": 1}, timeout=20)
+                    yield from ep_pop(dut.bit_source, {"write": 0}, timeout=20)
+                    yield from ep_push(dut.bit_sink, {"data": bit}, timeout=20)
+                yield from ep_pop(dut.bit_source, timeout=20)
+                yield from ep_push(dut.bit_sink, {"data": 1}, timeout=20)
 
 
-                yield from pop(dut.bit_source, {"last": 1}, timeout=20)
-                yield from push(dut.bit_sink, {"last": 1}, timeout=20)
+                yield from ep_pop(dut.bit_source, {"last": 1}, timeout=20)
+                yield from ep_push(dut.bit_sink, {"last": 1}, timeout=20)
 
                 yield
 
@@ -999,11 +956,11 @@ class TestI2cByteOperationRTx(TestCoreCommon):
 
         def stim():
             # Start
-            yield from push(dut.master_sink, {"first": 1}, timeout=20)
+            yield from ep_push(dut.master_sink, {"first": 1}, timeout=20)
 
             # write one byte
-            yield from push(dut.master_sink, {"write": 1, "data": 0x42}, timeout=20)
-            yield from pop(dut.master_source, {"is_ack": 1, "ack": 1}, timeout=20)
+            yield from ep_push(dut.master_sink, {"write": 1, "data": 0x42}, timeout=20)
+            yield from ep_pop(dut.master_source, {"is_ack": 1, "ack": 1}, timeout=20)
 
             for _ in range(2):
                 yield
@@ -1011,20 +968,20 @@ class TestI2cByteOperationRTx(TestCoreCommon):
 
         def check():
             # yield
-            yield from pop(dut.bit_source, {"first": 1}, timeout=20)
-            yield from push(dut.bit_sink, {"first": 1}, timeout=20)
+            yield from ep_pop(dut.bit_source, {"first": 1}, timeout=20)
+            yield from ep_push(dut.bit_sink, {"first": 1}, timeout=20)
             yield
 
             for i in range(8):
                 bit = 0b1 & (0x42 >> (7 - i))
-                yield from pop(dut.bit_source, {"data": bit}, timeout=20)
-                yield from push(dut.bit_sink, {"data": bit}, timeout=20)
-            yield from pop(dut.bit_source, {"data": 1}, timeout=20)
-            yield from push(dut.bit_sink, {"data": 1}, timeout=20)
+                yield from ep_pop(dut.bit_source, {"data": bit}, timeout=20)
+                yield from ep_push(dut.bit_sink, {"data": bit}, timeout=20)
+            yield from ep_pop(dut.bit_source, {"data": 1}, timeout=20)
+            yield from ep_push(dut.bit_sink, {"data": 1}, timeout=20)
 
             # since the ACK=1, the write stops there
-            yield from pop(dut.bit_source, {"last": 1}, timeout=20)
-            yield from push(dut.bit_sink, {"last": 1}, timeout=20)
+            yield from ep_pop(dut.bit_source, {"last": 1}, timeout=20)
+            yield from ep_push(dut.bit_sink, {"last": 1}, timeout=20)
 
             yield
 
