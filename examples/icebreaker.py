@@ -43,6 +43,51 @@ _ios = [
 
 class I2cDemo(LiteXModule, AutoCSR):
     def __init__(self, platform, sys_clk_freq):
+        from regmap.core.i2c import I2cPads, I2cOperation, I2cByteOperation
+        bus = I2cBus()
+        self.submodules.eui = eui = EEPROM_MAC(bus, address=0b1010000)
+        self.submodules.pads = pads = I2cPads(platform.request("i2c"))
+        self.submodules.op_b = op_b = I2cByteOperation(pads, 100)
+        self.submodules.op = op = I2cOperation()
+        enable = Signal()
+
+        self.cr = CSRStorage("cr", fields = [
+            CSRField("en", 1, offset=0),
+            CSRField("speed", 1, offset=4),
+            CSRField("sda_o", 1, offset=8),
+            CSRField("scl_o", 1, offset=9),
+            ])
+        self.st = CSRStatus("st", fields = [
+            CSRField("mac_valid", 1, offset=0),
+            ])
+        self.mac_msb = CSRStatus(name="mac_msb", size=48-32)
+        self.mac_lsb = CSRStatus(name="mac_lsb", size=32)
+
+        self.comb += [
+            op.source.connect(op_b.sink),
+            op_b.source.connect(eui.i2c_sink),
+            If(self.cr.fields.en,
+                eui.i2c_source.connect(op.sink),
+            ),
+            self.mac_lsb.status.eq(eui.eui.eui[0:32]),
+            self.mac_msb.status.eq(eui.eui.eui[32:]),
+            self.st.fields.mac_valid.eq(eui.eui.valid),
+        ]
+
+        self.analyzer_signals = [
+            self.cr.fields.en,
+            self.op.sink.first,
+            self.op.sink.last,
+            self.op.sink.read,
+            self.op.sink.write,
+            self.op_b.source.valid,
+            self.op_b.source.ready,
+            self.op_b.source.ack,
+        ]
+
+
+class I2cRegmapDemo(LiteXModule, AutoCSR):
+    def __init__(self, platform, sys_clk_freq):
         pads = platform.request("i2c")
         self.submodules.i2c_pads = i2c_pads = I2cPads(pads)
         self.submodules.bit_rtx = bit_rtx = I2cBitOperationRTx(i2c_pads, sys_clk_freq)
@@ -80,7 +125,6 @@ class I2cDemo(LiteXModule, AutoCSR):
             # regmap.add_transaction(temp.tos.write(0xdead))
 
         self.analyzer_signals = [
-            
         ]
 
         self.cr = CSRStorage("cr", fields = [
@@ -125,6 +169,8 @@ class I2cDemo(LiteXModule, AutoCSR):
 class BaseSoC(SoCCore):
     def __init__(self, sys_clk_freq=24e6,
         with_led_chaser     = True,
+        with_i2c            = False,
+        with_i2c_regmap     = False,
         **kwargs):
         platform = icebreaker.Platform()
         platform.add_extension(icebreaker.break_off_pmod)
@@ -143,13 +189,16 @@ class BaseSoC(SoCCore):
         self.add_uartbone()
 
         # I2C
-        self.submodules.i2c = I2cDemo(platform, sys_clk_freq)
+        if with_i2c:
+            self.submodules.i2c = I2cDemo(platform, sys_clk_freq)
+        if with_i2c_regmap:
+            self.submodules.i2c = I2cRegmapDemo(platform, sys_clk_freq)
 
         analyzer_signals = [ ] + self.i2c.analyzer_signals
 
         if len(analyzer_signals):
             self.submodules.analyzer = LiteScopeAnalyzer(analyzer_signals,
-                depth        = 4096 * 2,
+                depth        = 4096,
                 clock_domain = "sys",
                 samplerate   = sys_clk_freq,
                 csr_csv      = "analyzer.csv")
@@ -173,6 +222,8 @@ def main():
     parser = LiteXArgumentParser(platform=icebreaker.Platform, description="regmap demo on iCEBreaker.")
     parser.add_target_argument("--flash",               action="store_true",      help="Flash Bitstream")
     parser.add_target_argument("--sys-clk-freq",        default=24e6, type=float, help="System clock frequency.")
+    parser.add_target_argument("--i2c",                 action="store_true",      help="Enable the I2C demo")
+    parser.add_target_argument("--i2c-regmap",          action="store_true",      help="Enable the I2C Regmap demo")
     args = parser.parse_args()
 
     if args.load:
@@ -180,6 +231,8 @@ def main():
 
     soc = BaseSoC(
         sys_clk_freq        = args.sys_clk_freq,
+        with_i2c            = args.i2c,
+        with_i2c_regmap     = args.i2c_regmap,
         **parser.soc_argdict
     )
     builder = Builder(soc, **parser.builder_argdict)
