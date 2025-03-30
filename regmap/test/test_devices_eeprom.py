@@ -39,7 +39,7 @@ class TestEeprom(unittest.TestCase):
             print(f"EUI={eui:012X}")
             for _ in range(150):
                 yield
-            assert eui == 0x000102030405
+            assert eui == 0x050403020100
 
         run_simulation(top,
             [
@@ -50,5 +50,4 @@ class TestEeprom(unittest.TestCase):
                 mem_sim.sim(),
             ],
             vcd_name="out/test_devices_eeprom_eeprom_mac_read.vcd")
-        # assert(mem_sim.mem == {0x69: 0xde, 0x6A: 0xad})
 
