@@ -34,4 +34,4 @@ doc = [
 ]
 
 [tool.setuptools.packages.find]
-include = ["regmap"]
+include = ["regmap", "regmap.*"]
