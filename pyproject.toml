@@ -18,10 +18,10 @@ classifiers = [
     "Development Status :: 2 - Pre-Alpha",
     "Topic :: System :: Hardware"
 ]
-license = "BSD-2"
+license = "BSD-2-Clause"
 
 [project.urls]
-Homepage = "https://github.com/chmousset/python-regmap"
+Homepage = "https://github.com/railnova/python-regmap"
 
 [project.optional-dependencies]
 doc = [
