@@ -105,8 +105,8 @@ class EEPROM_MAC(EEPROM_24):
                 NextValue(bytes_read, bytes_read + 1),
                 If(bytes_read != 0,
                     Case(bytes_read, {
-                        i + 1: [NextValue(eui.eui[i * 8 : i * 8 + 8], i2c_sink.data)]
-                        for i in range(5,-1,-1)}),
+                        i + 1: [NextValue(eui.eui[(5-i) * 8 : (5-i) * 8 + 8], i2c_sink.data)]
+                        for i in range(6)}),
                     NextState("READ_SETUP"),
                 ),
                 If(bytes_read == 6,
