@@ -21,7 +21,7 @@ classifiers = [
 license = "BSD-2-Clause"
 
 [project.urls]
-Homepage = "https://github.com/railnova/python-regmap"
+Homepage = "https://github.com/chmousset/python-regmap"
 
 [project.optional-dependencies]
 doc = [
