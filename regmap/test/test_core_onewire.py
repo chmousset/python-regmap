@@ -1,8 +1,7 @@
 import unittest
-import inspect
 from math import ceil
-from migen import *
-from regmap.core.onewire import *
+from migen import Signal, run_simulation, Record, Module, C, If
+from regmap.core.onewire import OneWireBitOperation, OneWireByteOperation, OneWireTiming, one_wire_timing
 from regmap.devices.tmp182x import TMP1826
 
 

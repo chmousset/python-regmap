@@ -1,5 +1,5 @@
 from math import ceil
-from migen import Module, If, Signal, FSM, NextState, NextValue, Cat, Case
+from migen import Module, If, Signal, FSM, NextState, NextValue, Cat
 from litex.soc.interconnect import stream
 
 one_wire_bit_layout = [
