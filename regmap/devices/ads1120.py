@@ -1,5 +1,5 @@
-from migen import Module, C, Signal, If, FSM, Record, Case, NextValue, NextState, Cat
-from migen.fhdl.specials import Memory
+from migen import C, Signal, If, FSM, Case, NextState, Cat, NextValue
+from migen.genlib.cdc import MultiReg
 from regmap.core.spi import SpiDevice, spi_layout, spi_ctrl_layout
 from litex.soc.interconnect import stream
 
@@ -44,7 +44,7 @@ class ADS1120Config:
         250:   (6, 1),
         # Turbo Mode
         40:    (0, 2),
-        90:    (1, 2),
+        # 90:    (1, 2),  # 90 SPS available in normal mode
         180:   (2, 2),
         350:   (3, 2),
         660:   (4, 2),
@@ -149,8 +149,7 @@ class ADS1120(SpiDevice):
     require_continuous_clk = False
     dw = 16
     data_layout = [
-        ("channel", 3),
-        ("cfg_id", 3),
+        ("channel", 4),
         ("data", dw),
     ]
     channel_count = 4
@@ -163,16 +162,15 @@ class ADS1120(SpiDevice):
 
 
     parameters:
-    - sequencer_depth: if None, sequencer depth is determined from `config` parameter.
-    - sequence: either
-      - None:
-      - `ADS1120Config`: 
-      - `array(ADS1120Config)`: 
 
     inputs:
-    - config: `[Signal(32); 4]` - if the sequencer isn't used, the channel config is taken from
-      these signals.
-    - drdy_n: when cleared, a sample is ready to be read
+    - config: `Signal(32)` - the channel config is taken from these signals:
+        - config[0:8] -> config register 3
+        - config[8:16] -> config register 2
+        - config[16:24] -> config register 1
+        - config[24:32] -> config register 0
+    - drdy_n: when cleared, a sample is ready to be read. This can either be controlled by a timer
+      or the drdy pin
 
     outputs:
     - chip_select: when DRDY is muxed, the CS pin must be driven low before data is exchanged.
@@ -184,73 +182,65 @@ class ADS1120(SpiDevice):
       **NOTE**: the two least-significant bits of the MUX configuration correspond to the index of
       the channel. This limits logic usage, and in most cases is sufficient but doesn't support all
       mux configurations.
+    - wait_conversion: set when waiting for DRDY
 
     ## SPI protocol
-    When a conversion result is available, it is transmitted it in the first two bytes the ADC send.
+    When a conversion result is available, it is transmitted in the first two bytes the ADC sends.
     Availability of ADC sample is signaled through pin DRDY, which falls low to signal availability.
     This pin should be connected to drdy_n.
 
     ## Muxing MISO and DRDY
     It is possible to mux DRDY on MISO pin. In that case, connect drdy_n to miso input.
     This requires however that the ADC configuration sets bit DRDYM
-
-    ## Sequencer (optional)
-    The sequencer allows to autonomously sample different channels in a determined sequence.
-    Each sequence holds the 4 configuration bytes. A memory stores the sequences.
-    The memory is memory-mapped through the use of `LiteXModule`.
-
     """
-    # YOU HAVE DECIDED TO GO WITH FPGA TECH FOR THE ADC POLLING! STOP PROCRASTINATING!!!
-    # Idle=CONFIG
-    # CONFIG:
-    #   if chip_select, wait for drdy_n == 0
-    #   connect mem to SPI
-    #   connect SPI to gearbox if valid_config
-    #   if config_done, clear chip_select and go to GIVE_ARB
-    # GIVE_ARB:
-    #   set chip_select
-    #   go to CONFIG
-    #
-    def __init__(self, sequencer_depth=None, sequence=None):
+
+    def __init__(self):
         # inputs
         self.spi_sink = spi_sink = stream.Endpoint(spi_layout(self.dw))
-        self.drdy_n = drdy_n = Signal()
+        self.drdy_n = Signal()
         self.config = config = Signal(32)
 
         # outputs
         self.spi_source = spi_source = stream.Endpoint(spi_ctrl_layout(self.dw) + spi_layout(self.dw))
         self.source = source = stream.Endpoint(self.data_layout)
         self.channels = channels = [Signal(self.dw) for _ in range(self.channel_count)]
-        self.chip_select = chip_select = Signal()
+        self.chip_select = chip_select = Signal(reset=1)
+        self.wait_conversion = wait_conversion = Signal()
 
         # # #
+        drdy_n = Signal()
+        self.specials += MultiReg(self.drdy_n, drdy_n)
         current_chan = Signal(max=self.channel_count)
         self.comb += [
-            spi_source.data.eq(0),  # NOP
             spi_source.cpha.eq(1),
             source.data.eq(spi_sink.data),
-            chip_select.eq(1),
+            source.channel.eq(current_chan),
         ]
         self.submodules.fsm = fsm = FSM("CMD+CFG0")
         fsm.act("WAIT_CONVERSION",
+            wait_conversion.eq(1),
             chip_select.eq(0),
+            spi_sink.ready.eq(1),
             If(~drdy_n,
                 NextState("CMD+CFG0"),
             ),
         )
+
         fsm.act("CMD+CFG0",
             spi_source.valid.eq(1),
             spi_source.width.eq(15),
-            spi_source.data.eq(Cat(config[24:32], C(0b01000011))), # write 3+1 reg from reg 0 
+            spi_source.data.eq(Cat(config[24:32], C(0b01000011))), # write 3+1 reg from reg 0
             If(spi_source.ready,
                 NextState("READ_DATA"),
             ),
         )
         fsm.act("READ_DATA",
             spi_sink.ready.eq(1),
+            source.valid.eq(spi_sink.valid),
             If(spi_sink.valid,
+                NextValue(current_chan, config[24+4:24+8]),
                 Case(current_chan, {
-                    i: channels[i].eq(spi_sink.data) for i in range(self.channel_count)
+                    i: NextValue(channels[i], spi_sink.data) for i in range(self.channel_count)
                 }),
                 NextState("CFG1-2"),
             ),
@@ -260,48 +250,21 @@ class ADS1120(SpiDevice):
             spi_source.width.eq(15),
             spi_source.data.eq(config[8:24]),
             If(spi_source.ready,
-                NextState("CFG3"),
+                NextState("CFG3-START"),
             ),
         )
-        fsm.act("CFG3",
+        fsm.act("CFG3-START",
             spi_source.valid.eq(1),
-            spi_source.width.eq(7),
+            spi_source.width.eq(15),
             spi_source.last.eq(1),
-            spi_source.data.eq(config[0:8]),
+            spi_source.data.eq(Cat(C(0b000_1001, 8), config[0:8])),
             If(spi_source.ready,
                 NextState("FINISH"),
             ),
         )
         fsm.act("FINISH",
-            If(spi_sink.ready,
+            chip_select.eq(0),
+            If(spi_source.ready,
                 NextState("WAIT_CONVERSION"),
             ),
         )
-
-        # configuration
-        # if config is not None:
-        #     init = regs_to_mem_builder(config)
-        #     mem = Memory(width=17, depth=len(init), init=init)
-        #     rp = mem.get_port()
-        #     self.specials += mem, rp
-
-        #     fsm.act("CONFIG",
-        #         spi_source.valid.eq(1),
-        #         spi_sink.ready.eq(1),
-        #         If(rp.dat_r & (1<<16),
-        #             spi_source.valid.eq(1),
-        #             spi_source.data[-16:].eq(rp.dat_r[0:16]),
-        #             If(spi_source.ready,
-        #                 NextValue(rp.adr, rp.adr + 1),
-        #             ),
-        #         ).Else(
-        #             spi_source.valid.eq(0),
-        #             If(spi_sink.valid,
-        #                 NextValue(configured, 1),
-        #                 NextState("IDLE"),
-        #             ),
-        #         ),
-        #     )
-
-    def add_self_config(self, config):
-        pass

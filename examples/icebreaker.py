@@ -1,4 +1,5 @@
 from migen import *
+from migen.genlib.cdc import MultiReg
 
 from litex.gen import *
 from litex.build.generic_platform import *
@@ -7,7 +8,7 @@ from litex.soc.integration.soc import SoCRegion
 from litex.soc.integration.builder import *
 from litex.soc.cores.led import LedChaser
 from litex.soc.interconnect.csr import AutoCSR, CSRStorage, CSRStatus, CSRField
-from litex.gen.fhdl.module import LiteXModule 
+from litex.gen.fhdl.module import LiteXModule
 
 from litescope import LiteScopeAnalyzer
 
@@ -17,6 +18,7 @@ from litex_boards.targets.icebreaker import _CRG, flash
 from regmap.core.models import I2cReg, I2cDevice, I2cBus
 from regmap.core.i2c import I2cPads, I2cBitOperationRTx, I2cByteOperationRTx
 from regmap.core.i2c_sequencer import I2cRegmap
+from regmap.core.onewire import WaitTimer
 from regmap.devices.temp import LM75
 from regmap.devices.eeprom import EEPROM_MAC
 
@@ -62,14 +64,18 @@ class SpiDemo(LiteXModule, AutoCSR):
         self.sr = CSRStatus("sr", fields=[
             CSRField("busy", 1, offset=0),
         ])
-        self.chan_0 = CSRStatus(24, name=f"chan_0")
-        self.chan_1 = CSRStatus(24, name=f"chan_1")
-        self.chan_2 = CSRStatus(24, name=f"chan_2")
-        self.chan_3 = CSRStatus(24, name=f"chan_3")
+        self.chan_0 = CSRStatus(24, name="chan_0")
+        self.chan_1 = CSRStatus(24, name="chan_1")
+        self.chan_2 = CSRStatus(24, name="chan_2")
+        self.chan_3 = CSRStatus(24, name="chan_3")
+        self.source = CSRStatus("source", fields=[
+            CSRField("channel", 2, offset=0),
+            CSRField("data", 24, offset=8),
+        ])
 
         # SPI Master
         pads = platform.request("spi", 0)
-        self.submodules.spi_master = master = SpiMaster(sys_clk_freq, 4E6, pads, 24, sclk_output_idle=self.cr.fields.clk)
+        self.submodules.spi_master = master = SpiMaster(sys_clk_freq, 2E6, pads, 24, sclk_output_idle=self.cr.fields.clk)
         self.comb += [
             self.sr.fields.busy.eq(self.spi_master.busy),
         ]
@@ -84,26 +90,51 @@ class SpiDemo(LiteXModule, AutoCSR):
             If(self.cr.fields.en_ads131,
                 self.spi_master.source.connect(self.ads131.spi_sink),
                 self.ads131.spi_source.connect(self.spi_master.sink),
+                self.chan_0.status.eq(self.ads131.channels[0]),
+                self.chan_1.status.eq(self.ads131.channels[1]),
+                self.chan_2.status.eq(self.ads131.channels[2]),
+                self.chan_3.status.eq(self.ads131.channels[3]),
             ),
         ]
-        for (i, chan) in enumerate(self.ads131.channels):
-            self.comb += [
-                getattr(self, f"chan_{i}").status.eq(chan)
-            ]
 
         # SPI Slave: ADS1120
+        self.submodules.conv_wt = conv_wt = WaitTimer(int(sys_clk_freq // 1000))
         self.submodules.ads1120 = ADS1120()
         self.comb += [
             If(self.cr.fields.en_ads1120,
                 self.spi_master.source.connect(self.ads1120.spi_sink),
                 self.ads1120.spi_source.connect(self.spi_master.sink),
+                conv_wt.wait.eq(self.ads1120.wait_conversion),
+                self.ads1120.drdy_n.eq(~conv_wt.done),
+                self.chan_0.status.eq(self.ads1120.channels[0]),
+                self.chan_1.status.eq(self.ads1120.channels[1]),
+                self.chan_2.status.eq(self.ads1120.channels[2]),
+                self.chan_3.status.eq(self.ads1120.channels[3]),
             ),
             self.ads1120.config.eq(self.config.storage),
-            self.ads1120.drdy_n.eq(pads.miso),
+            # self.ads1120.drdy_n.eq(pads.miso),
         ]
+        self.sync += [
+            If(self.cr.fields.en_ads1120 & self.ads1120.source.valid,
+                self.source.fields.data.eq(self.ads1120.source.data),
+                self.source.fields.channel.eq(self.ads1120.source.channel),
+            )
+        ]
+
         simple_config = ADS1120Config(mux_drdy=True).to_w32()
         print(f"ADS1120 config: {simple_config:08X}")
         # exit(0)
+        #
+
+        # Chip Select
+        if hasattr(pads, "cs_"):
+            self.comb += [
+                If(self.cr.fields.en_ads1120,
+                    pads.cs_.eq(self.ads1120.chip_select & ~self.spi_master.busy),
+                ).Else(
+                    pads.cs_.eq(~self.spi_master.busy),
+                ),
+            ]
 
         # Analyzer
         self.analyzer_signals = [
@@ -123,7 +154,6 @@ class I2cDemo(LiteXModule, AutoCSR):
         self.submodules.pads = pads = I2cPads(platform.request("i2c"))
         self.submodules.op_b = op_b = I2cByteOperation(pads, 100)
         self.submodules.op = op = I2cOperation()
-        enable = Signal()
 
         self.cr = CSRStorage("cr", fields = [
             CSRField("en", 1, offset=0),
@@ -246,6 +276,7 @@ class BaseSoC(SoCCore):
         with_i2c            = False,
         with_i2c_regmap     = False,
         with_spi            = False,
+        with_analyzer       = False,
         **kwargs):
         platform = icebreaker.Platform()
         platform.add_extension(icebreaker.break_off_pmod)
@@ -276,7 +307,7 @@ class BaseSoC(SoCCore):
 
         analyzer_signals = [ ] + self.demo.analyzer_signals
 
-        if len(analyzer_signals):
+        if len(analyzer_signals) & with_analyzer:
             self.submodules.analyzer = LiteScopeAnalyzer(analyzer_signals,
                 depth        = 1024,
                 clock_domain = "sys",
@@ -305,6 +336,7 @@ def main():
     parser.add_target_argument("--i2c",                 action="store_true",      help="Enable the I2C demo")
     parser.add_target_argument("--i2c-regmap",          action="store_true",      help="Enable the I2C Regmap demo")
     parser.add_target_argument("--spi",                 action="store_true",      help="Enable the SPI demo")
+    parser.add_target_argument("--with-analyzer",       action="store_true",      help="Enable the litescope analyzer")
     args = parser.parse_args()
 
     if args.load:
@@ -315,6 +347,7 @@ def main():
         with_i2c            = args.i2c,
         with_i2c_regmap     = args.i2c_regmap,
         with_spi            = args.spi,
+        with_analyzer       = args.with_analyzer,
         **parser.soc_argdict
     )
     builder = Builder(soc, **parser.builder_argdict)

@@ -1,8 +1,7 @@
 import unittest
-import inspect
-from migen import *
-from regmap.core.spi import *
-from regmap.devices.ads131 import *
+from migen import passive, run_simulation, Record, C, Module
+from regmap.core.spi import SpiMaster, SpiClkSync, SPISuperviser, VNI8200XP
+from regmap.devices.ads131 import ADS131M04
 
 
 def word2bits(word, dw=16):
@@ -61,7 +60,7 @@ def spi_check_data_stable_cpol_cpha(pads, cs, cpol, cpha):
             if (cs == 0) & (old_cs == 1):
                 # MOSI can change at the same time as CS
                 pass
-            elif (cpol ^ cpha) == sclk:
+            elif (cpol ^ cpha) == sclk and old_sclk == sclk:
                 # or at the right clock flank
                 pass
             else:
@@ -133,21 +132,7 @@ def spi_mosi_check(pads, bits, cs_pad=None, cpol=0, cpha=0, timeout=100):
             old_cs = cs
             if next_bit:
                 break
-        assert cycles != timeout - 1
-
-@passive
-def spi_mosi_mock(dut, expected_mosi, cpol=0, cpha=0, cs=None):
-    sclk = yield(pads.sclk)
-    if cs is None:
-        cs = C(0)
-
-    while True:
-        yield
-        # wait for the correct edge
-        while not ((yield pads.sclk) ^ sclk) & (~sclk ^ cpol ^ cpha) & (yield ~cs):
-            sclk = (yield pads.sclk)
-            yield
-        yield pads.miso.eq(bit)
+        raise Exception("Timeout waiting for bit")
 
 
 class TestSpiClkSync(unittest.TestCase):
@@ -192,7 +177,6 @@ class TestSpiClkSync(unittest.TestCase):
                 print(f"cpol={cpol} cpha={cpha}")
                 dut = SpiClkSync(12E6, 4E6, cpol, cpha)
 
-                bits = [1, 0, 1, 0]
                 run_simulation(dut, [
                         check(dut, cpol, cpha),
                         wait_min_sclk(),
@@ -270,7 +254,7 @@ class TestSpiMaster(unittest.TestCase):
                 dut.comb += pads.cs.eq(~dut.busy)
                 words = [0xde, 0xad, 0xbe, 0xef]
                 width = 8
-                bits = [(word >> i) & 0b1 for i in range(width, -1)]
+                bits = [(word >> i) & 0b1 for i in range(width, -1) for word in words]
                 read_words = [(~word) & ((1<<width) - 1) for word in words]
                 print(f"cpol={cpol} cpha={cpha}")
                 run_simulation(dut, [

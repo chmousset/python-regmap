@@ -1,4 +1,4 @@
-from litex.soc.interconnect.csr import *
+from litex.soc.interconnect.csr import CSRStatus, CSRField, CSRStorage, AutoCSR
 from math import ceil, log2
 from migen import Module, C, Signal, If, FSM, Record, Case, NextValue, NextState, Cat
 from litex.soc.interconnect import stream
@@ -75,7 +75,7 @@ class SpiMaster(Module):
       - `last`: if set, the master returns in "IDLE" after transmissing the payload
       - `cpol`: clock polarity
       - `cpha`: clock edge
-      - `first`: passed to `source`, optional 
+      - `first`: passed to `source`, optional
 
     outputs:
     - `source`:
@@ -106,7 +106,7 @@ class SpiMaster(Module):
         ]
         csyn = csyn.csyn
         if hasattr(pads, "cs"):
-            self.sync += pads.cs.eq(~busy)
+            self.comb += pads.cs.eq(~busy)
 
         # bufferred inputs
         tx = Signal(dw)
@@ -254,7 +254,6 @@ class VNI8200XP(SPISlaveInterface):
     spi_speed = 5e6
     def __init__(self, SEL1=1):
         self.outputs = out = Signal(8)
-        self.fault = fault = Signal()
         self.length = length = 16 if SEL1 else 8
         self.status = status = Signal(length)
         self.mosi = mosi = Signal(length)
@@ -311,7 +310,7 @@ class CLT01(SPISlaveInterface):
     def __init__(self, SPM=0):
         self.inputs = i = Signal(8)
         self.fault = fault = Signal()
-        self.length = length = 8 if SPM else 16
+        self.length = 8 if SPM else 16
         self.status = status = Signal(8)
 
         # We only receive data
