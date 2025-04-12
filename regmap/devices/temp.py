@@ -1,4 +1,4 @@
-from regmap.core.models import I2cBus, I2cDevice, I2cReg
+from regmap.core.models import I2cDevice, I2cReg
 from regmap.core.i2c import i2c_byte_layout, i2c_operation_layout
 from litex.soc.interconnect import stream
 from migen import Module, FSM, If, NextValue, NextState
@@ -84,8 +84,8 @@ class LM75(I2cDevice, Module):
         fsm.act("READBACK_TEMP",
             i2c_sink.ready.eq(1),
             If(i2c_sink.valid,
-                NextValue(self.temp.temp, i2c_sink.data),
-                NextValue(self.temp.valid, 1),
+                NextValue(temp.temp, i2c_sink.data),
+                NextValue(temp.valid, 1),
                 NextState("IDLE"),
             ),
         )

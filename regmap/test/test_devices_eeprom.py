@@ -1,12 +1,10 @@
 import unittest
-from migen import Module, Signal, If
-from migen.sim.core import run_simulation, passive
-from regmap.core.i2c import (
-    I2CTimer, I2cBitOperation, I2cBitOperationRTx, I2cByteOperationRx, I2cByteOperation,
-    I2cOperation, I2cByteOperationRTx
-)
+from migen import Module
+from migen.sim.core import run_simulation
+from regmap.core.i2c import I2cByteOperation, I2cOperation
+
 from regmap.devices.eeprom import EEPROM_MAC
-from regmap.test.utils import *
+from regmap.test.utils import assert_eq_before, timeout
 from regmap.test.test_core_i2c import I2cMem, I2cBus, IoTri
 
 
@@ -39,7 +37,7 @@ class TestEeprom(unittest.TestCase):
             print(f"EUI={eui:012X}")
             for _ in range(150):
                 yield
-            assert eui == 0x050403020100
+            assert eui == 0x000102030405
 
         run_simulation(top,
             [
@@ -50,4 +48,3 @@ class TestEeprom(unittest.TestCase):
                 mem_sim.sim(),
             ],
             vcd_name="out/test_devices_eeprom_eeprom_mac_read.vcd")
-

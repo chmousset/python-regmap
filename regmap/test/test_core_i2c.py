@@ -5,7 +5,7 @@ from regmap.core.i2c import (
     I2CTimer, I2cBitOperation, I2cBitOperationRTx, I2cByteOperationRx, I2cByteOperation,
     I2cOperation, I2cByteOperationRTx
 )
-from regmap.test.utils import *
+from regmap.test.utils import ep_pop, ep_push, timeout,assert_eq_before
 
 
 class I2cDevice(Module):

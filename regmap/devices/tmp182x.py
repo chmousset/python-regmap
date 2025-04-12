@@ -1,7 +1,7 @@
-from migen import Module, C, Signal, If, FSM, Record, Case, NextValue, NextState, Cat
-from migen.fhdl.specials import Memory
+from migen import Module, If, FSM, NextValue, NextState
 from regmap.core.onewire import one_wire_byte_layout, one_wire_byte_operation_layout
 from litex.soc.interconnect import stream
+from litex.gen.genlib.misc import WaitTimer
 
 
 class TMP182x(Module):
@@ -16,7 +16,6 @@ class TMP182x(Module):
         # # #
         self.comb += source.overdrive.eq(1)
         self.submodules.fsm = fsm = FSM("IDLE")
-        from litex.gen.genlib.misc import WaitTimer
         self.submodules.wt = wt = WaitTimer(100000)
         fsm.act("IDLE",
             source.first.eq(1),

@@ -1,4 +1,4 @@
-from regmap.core.models import I2cBus, I2cDevice, I2cReg
+from regmap.core.models import I2cDevice, I2cReg
 from regmap.core.i2c import i2c_byte_layout, i2c_operation_layout
 from litex.soc.interconnect import stream
 from migen import Signal, Module, FSM, If, NextValue, NextState, Case
@@ -9,7 +9,7 @@ eeprom_mac_layout = [ ("eui", 48) ]
 class EEPROM_24(I2cDevice, Module):
     def __init__(self, bus, address=0b1010000, bytes_address=1):
         # inputs
-        self.i2c_sink = i2c_sink = stream.Endpoint(i2c_byte_layout)
+        self.i2c_sink = stream.Endpoint(i2c_byte_layout)
 
         # outputs
         self.i2c_source = i2c_source = stream.Endpoint(i2c_operation_layout)
@@ -18,7 +18,7 @@ class EEPROM_24(I2cDevice, Module):
         super().__init__(bus, address=address)
 
         self.comb += [
-            self.i2c_source.address.eq(self.address),
+            i2c_source.address.eq(self.address),
         ]
 
 
@@ -105,7 +105,7 @@ class EEPROM_MAC(EEPROM_24):
                 NextValue(bytes_read, bytes_read + 1),
                 If(bytes_read != 0,
                     Case(bytes_read, {
-                        i + 1: [NextValue(eui.eui[i * 8 : i * 8 + 8], i2c_sink.data)]
+                        6 - i: [NextValue(eui.eui[i * 8 : i * 8 + 8], i2c_sink.data)]
                         for i in range(6)}),
                     NextState("READ_SETUP"),
                 ),
