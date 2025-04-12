@@ -1,4 +1,4 @@
-from migen import Module, C, Signal, If, FSM, Record, Case, NextValue, NextState, Cat
+from migen import Signal, If, FSM, Case, NextValue, NextState
 from migen.fhdl.specials import Memory
 from regmap.core.spi import SpiDevice, spi_layout, spi_ctrl_layout
 from litex.soc.interconnect import stream
@@ -25,7 +25,7 @@ class ADS131Mxx(SpiDevice):
         ("channel", 3),
         ("data", 24),
     ]
-    channel_count = None
+    channel_count = 0
 
     """
     parameters:
@@ -35,7 +35,6 @@ class ADS131Mxx(SpiDevice):
     def __init__(self, config=None):
         # inputs
         self.spi_sink = spi_sink = stream.Endpoint(spi_layout(self.dw))
-        self.launch_config = launch_config = Signal()
 
         # outputs
         self.spi_source = spi_source = stream.Endpoint(spi_ctrl_layout(self.dw) + spi_layout(self.dw))
