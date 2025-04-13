@@ -118,11 +118,11 @@ class ADS1120Config:
             (1 if self.pga_bypass else 0)
         dr, mode = self.dr_mode[self.data_rate]
         cfg1 = (dr << 5) | (mode << 3) | (0 if self.single_shot else 1 << 2) | \
-            (1 if self.temp else 0 << 1) | (1 if self.bcs else 0)
+            (1 << 1 if self.temp else 0) | (1 if self.bcs else 0)
         cfg2 = (self.vrefs[self.vref] << 6)| (self.filters[self.fir] << 4) | \
-            (1 if self.auto_power_switch else 0 << 3) | (self.idac[self.idac_ua])
+            (1 << 3 if self.auto_power_switch else 0) | (self.idac[self.idac_ua])
         cfg3 = (self.iadc_mux[self.idac1_chan] << 5) | (self.iadc_mux[self.idac2_chan] << 2) | \
-            (1 if self.mux_drdy else 0 << 1) | (0)
+            (1 << 1 if self.mux_drdy else 0) | (0)
         return cfg0, cfg1, cfg2, cfg3
 
     def to_w32(self):
